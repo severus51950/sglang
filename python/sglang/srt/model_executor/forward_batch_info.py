@@ -503,8 +503,11 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
 
     attn_cp_metadata: Optional[ContextParallelMetadata] = None
 
-    # For ngram embedding
-    ngram_embedding_info: Optional[NgramEmbeddingInfo] = None
+    # For beam search
+    is_beam_search: bool = False
+
+    # Record the split metadata of the sequence number of NSA context parallels.
+    nsa_cp_metadata: Optional[NSAContextParallelMetadata] = None
 
     # For dumper: int-hashed request / bootstrap-room IDs (derived from rids)
     rids_int: Optional[torch.Tensor] = None
@@ -701,17 +704,9 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
             capture_hidden_mode=capture_hidden_mode,
             return_hidden_states_before_norm=return_hidden_states_before_norm,
             tbo_split_seq_index=batch.tbo_split_seq_index,
-            # Host-side metadata
-            top_logprobs_nums=batch.top_logprobs_nums,
-            token_ids_logprobs=batch.token_ids_logprobs,
-            mm_inputs=batch.multimodal_inputs,
-            encoder_cached=batch.encoder_cached,
-            encoder_lens_cpu=batch.encoder_lens_cpu,
-            lora_ids=[req.lora_id for req in batch.reqs],
-            rids=[req.rid for req in batch.reqs],
-            # Compound (carry their own device tensors)
-            sampling_info=batch.sampling_info,
-            spec_info=batch.spec_info,
+            dimensions=batch.dimensions,
+            is_beam_search=batch.is_beam_search,
+            return_hidden_states_before_norm=batch.return_hidden_states_before_norm,
         )
 
         ret._maybe_init_non_generation_fields(batch)

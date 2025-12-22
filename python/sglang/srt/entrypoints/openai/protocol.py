@@ -360,6 +360,7 @@ class CompletionRequest(BaseModel):
     response_format: Optional[Union[ResponseFormat, StructuralTagResponseFormat]] = None
     custom_params: Optional[Dict] = None
     custom_logit_processor: Optional[str] = None
+    use_beam_search: bool = False
 
     # For PD disaggregation
     bootstrap_host: Optional[Union[List[str], str]] = None
@@ -422,12 +423,15 @@ class CompletionResponseChoice(BaseModel):
     finish_reason: Optional[Literal["stop", "length", "content_filter", "abort"]] = None
     matched_stop: Union[None, int, str] = None
     hidden_states: Optional[object] = None
+    sequence_score: Optional[float] = None
 
     @model_serializer(mode="wrap")
     def _serialize(self, handler):
         data = handler(self)
         if self.hidden_states is None:
             data.pop("hidden_states", None)
+        if self.sequence_score is None:
+            data.pop("sequence_score", None)
         return data
 
 
@@ -456,12 +460,16 @@ class CompletionResponseStreamChoice(BaseModel):
     finish_reason: Optional[Literal["stop", "length", "content_filter", "abort"]] = None
     matched_stop: Union[None, int, str] = None
     hidden_states: Optional[object] = None
+    # For beam search results
+    sequence_score: Optional[float] = None
 
     @model_serializer(mode="wrap")
     def _serialize(self, handler):
         data = handler(self)
         if self.hidden_states is None:
             data.pop("hidden_states", None)
+        if self.sequence_score is None:
+            data.pop("sequence_score", None)
         return data
 
 
@@ -730,6 +738,7 @@ class ChatCompletionRequest(BaseModel):
     separate_reasoning: bool = True
     stream_reasoning: bool = True
     chat_template_kwargs: Optional[Dict] = None
+    use_beam_search: bool = False
 
     # SGLang multimodal controls (extensions)
     max_dynamic_patch: Optional[int] = None
@@ -911,7 +920,7 @@ class ChatCompletionRequest(BaseModel):
             "logit_bias": self.logit_bias,
             "custom_params": self.custom_params,
             "sampling_seed": self.seed,
-            "spaces_between_special_tokens": spaces_between_special_tokens,
+            "use_beam_search": self.use_beam_search,
         }
 
         if self.response_format and self.response_format.type == "json_schema":
@@ -969,18 +978,16 @@ class ChatCompletionResponseChoice(BaseModel):
     ] = None
     matched_stop: Union[None, int, str] = None
     hidden_states: Optional[object] = None
-    prompt_token_ids: Optional[List[int]] = None
-    meta_info: Optional[Dict[str, Any]] = None
+    # For beam search results
+    sequence_score: Optional[float] = None
 
     @model_serializer(mode="wrap")
     def _serialize(self, handler):
         data = handler(self)
         if self.hidden_states is None:
             data.pop("hidden_states", None)
-        if self.prompt_token_ids is None:
-            data.pop("prompt_token_ids", None)
-        if self.meta_info is None:
-            data.pop("meta_info", None)
+        if self.sequence_score is None:
+            data.pop("sequence_score", None)
         return data
 
 
@@ -1027,6 +1034,14 @@ class ChatCompletionResponseStreamChoice(BaseModel):
         ]
     ] = None
     matched_stop: Union[None, int, str] = None
+    sequence_score: Optional[float] = None
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler):
+        data = handler(self)
+        if self.sequence_score is None:
+            data.pop("sequence_score", None)
+        return data
 
 
 class ChatCompletionStreamResponse(BaseModel):

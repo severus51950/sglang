@@ -23,7 +23,8 @@ from fastapi import Request
 from fastapi.responses import ORJSONResponse, StreamingResponse
 from jsonschema import Draft202012Validator, SchemaError
 
-from sglang.srt.entrypoints.openai import encoding_dsv4, encoding_dsv32
+from sglang.srt.entrypoints.openai.encoding_dsv32 import encode_messages
+from sglang.srt.entrypoints.openai.openai_beam_search_mixin import OpenAIBeamSearchMixin
 from sglang.srt.entrypoints.openai.protocol import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -76,87 +77,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def normalize_tool_content(role: str, content):
-    """Normalize tool message content from OpenAI array format to plain string.
-
-    OpenAI clients may send tool content as a list of content parts
-    (e.g. [{"type":"text","text":"..."}]) but most chat templates expect
-    a plain string for tool messages. Only flatten when ALL items are
-    pure OpenAI text parts; preserve lists containing non-text-type items
-    that some templates intentionally iterate over.
-    """
-    if role != "tool" or not isinstance(content, list):
-        return content
-    parts = content
-    is_openai_text_parts = all(
-        (isinstance(p, dict) and p.get("type") == "text") or isinstance(p, str)
-        for p in parts
-    )
-    if is_openai_text_parts:
-        text_parts = [p.get("text", "") if isinstance(p, dict) else p for p in parts]
-        return " ".join(text_parts)
-    return content
-
-
-def parse_tool_call_arguments(arguments: str) -> Dict[str, Any]:
-    """Parse OpenAI tool call arguments for chat templates."""
-    try:
-        parsed_arguments = orjson.loads(arguments)
-    except orjson.JSONDecodeError as exc:
-        raise ValueError(
-            "Assistant tool call function.arguments must be valid JSON."
-        ) from exc
-
-    if not isinstance(parsed_arguments, dict):
-        raise ValueError(
-            "Assistant tool call function.arguments must be a JSON object."
-        )
-
-    return parsed_arguments
-
-
-def normalize_assistant_tool_call_arguments(message: Dict[str, Any]) -> None:
-    """Normalize assistant history tool call arguments in-place."""
-    if message.get("role") != "assistant" or not isinstance(
-        message.get("tool_calls"), list
-    ):
-        return
-
-    for item in message["tool_calls"]:
-        function = item.get("function") if isinstance(item, dict) else None
-        if not isinstance(function, dict):
-            continue
-        if "arguments" in function and isinstance(function["arguments"], str):
-            function["arguments"] = parse_tool_call_arguments(function["arguments"])
-
-
-def _extract_max_dynamic_patch(request: ChatCompletionRequest):
-    img_vals = []
-    vid_vals = []
-    for msg in request.messages or []:
-        content = getattr(msg, "content", None)
-        if not isinstance(content, list):
-            continue
-        for part in content:
-            # pydantic object or dict type
-            if getattr(part, "type", None) == "image_url":
-                iu = getattr(part, "image_url", None)
-                mdp = getattr(iu, "max_dynamic_patch", None) if iu else None
-                if mdp is not None:
-                    img_vals.append(int(mdp))
-            elif getattr(part, "type", None) == "video_url":
-                vu = getattr(part, "video_url", None)
-                mdp = getattr(vu, "max_dynamic_patch", None) if vu else None
-                if mdp is not None:
-                    vid_vals.append(int(mdp))
-
-    # TODO(yuan-luo): per-item max_dynamic_patch for both image and video
-    img_max_dynamic_patch = min(img_vals) if img_vals else None
-    vid_max_dynamic_patch = min(vid_vals) if vid_vals else None
-    return img_max_dynamic_patch, vid_max_dynamic_patch
-
-
-class OpenAIServingChat(OpenAIServingBase):
+class OpenAIServingChat(OpenAIBeamSearchMixin, OpenAIServingBase):
     """Handler for /v1/chat/completions requests"""
 
     _default_sampling_params_logged = False
@@ -972,6 +893,13 @@ class OpenAIServingChat(OpenAIServingBase):
         raw_request: Request,
     ) -> AsyncGenerator[str, None]:
         """Generate streaming chat completion response"""
+        if request.use_beam_search and request.n > 1:
+            async for chunk in self._generate_chat_beam_search_stream(
+                adapted_request, request, raw_request
+            ):
+                yield chunk
+            return
+
         # Parsers for tool calls and reasoning
         parser_dict = {}
         reasoning_parser_dict = {}
@@ -1236,6 +1164,9 @@ class OpenAIServingChat(OpenAIServingBase):
         created: int,
     ) -> Union[ChatCompletionResponse, ORJSONResponse]:
         """Build chat completion response from generation results"""
+        if request.use_beam_search and request.n > 1:
+            return self._build_chat_beam_search_response(request, ret, created)
+
         choices = []
 
         # Build sglext at response level (from first ret_item, as these are per-request)

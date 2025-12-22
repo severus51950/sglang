@@ -50,6 +50,10 @@ from sglang.srt.disaggregation.utils import DisaggregationMode
 from sglang.srt.environ import envs
 from sglang.srt.lora.lora_registry import LoRARef, LoRARegistry
 from sglang.srt.managers.async_dynamic_batch_tokenizer import AsyncDynamicbatchTokenizer
+from sglang.srt.managers.async_mm_data_processor import AsyncMMDataProcessor
+from sglang.srt.managers.beam_search_tokenizer_manager_mixin import (
+    BeamSearchTokenizerManagerMixin,
+)
 from sglang.srt.managers.disagg_service import start_disagg_service
 from sglang.srt.managers.embed_types import PositionalEmbeds
 from sglang.srt.managers.io_struct import (
@@ -235,7 +239,11 @@ class InputFormat(Enum):
     CROSS_ENCODER_PAIRS = 3  # Cross-encoder pairs like [["query", "document"]]
 
 
-class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
+class TokenizerManager(
+    BeamSearchTokenizerManagerMixin,
+    TokenizerCommunicatorMixin,
+    TokenizerManagerMultiItemMixin,
+):
     """TokenizerManager is a process that tokenizes the text."""
 
     @property
@@ -608,31 +616,23 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
             async with self.is_pause_cond:
                 await self.is_pause_cond.wait_for(lambda: not self.is_pause)
 
-            async with self.model_update_lock.reader_lock:
-                await self._validate_and_resolve_lora(obj)
-
-                # Tokenize the request and send it to the scheduler
-                if obj.is_single:
-                    tokenized_obj = await self._tokenize_one_request(obj)
-                    state = self.rid_to_state[obj.rid]
-                    if obj.return_prompt_token_ids:
-                        state.prompt_token_ids = list(tokenized_obj.input_ids)
-                    self._send_one_request(tokenized_obj)
-                    async for response in self._wait_one_response(obj, request):
+            if obj.is_single:
+                tokenized_obj = await self._tokenize_one_request(obj)
+                state = self._send_one_request(obj, tokenized_obj, created_time)
+                is_stream = hasattr(obj, "stream") and obj.stream
+                async for response in self._wait_one_response(obj, state, request):
+                    if isinstance(response, list) and is_stream:
+                        # Beam search response is a list of beam results
+                        # Stream: yield each beam result individually
+                        for beam_result in response:
+                            yield beam_result
+                    else:
                         yield response
-                else:
-                    async for response in self._handle_batch_request(obj, request):
-                        yield response
-        except Exception:
-            # _init_req_state created a rid_to_state entry per (sub-)request up
-            # front. The normal remover is the scheduler-response path
-            # (_handle_batch_output), so a failure *before* a request reaches the
-            # scheduler -- e.g. input-length validation rejecting an over-context
-            # request -- would otherwise leak those entries forever. Drop any that
-            # are still pending; entries already removed on the normal completion
-            # path are left untouched (pop is a no-op).
-            self._discard_pending_req_states(obj)
-            raise
+            else:
+                async for response in self._handle_batch_request(
+                    obj, request, created_time
+                ):
+                    yield response
 
     def _detect_input_format(
         self, texts: Union[str, List[str]], is_cross_encoder: bool
@@ -1453,35 +1453,14 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
             # Drain all pending outputs atomically.
             out_list = state.out_list
             state.out_list = []
-            finished = state.finished
-            state.event.clear()
 
-            # With incremental streaming, each chunk is a delta — coalesce
-            # multiple queued chunks to avoid dropping token ids.
-            incremental_stream = (
-                is_stream and self.server_args.incremental_streaming_output
-            )
-            if incremental_stream and len(out_list) > 1:
-                out = self._coalesce_streaming_chunks(
-                    out_list,
-                    obj.rid,
-                    state.customized_info_accumulated.keys(),
-                )
-            else:
-                out = out_list[-1]
-
-            # Resolve deferred text for non-incremental streaming.
-            # _handle_batch_output sets "text": None on intermediate chunks
-            # to avoid O(n) string rebuild per step (O(n^2) total).
-            if (
-                is_stream
-                and not incremental_stream
-                and "text" in out
-                and out["text"] is None
-            ):
-                out["text"] = state.get_text()
-
-            if finished:
+            if out.get("beam_results"):
+                if state.finished:
+                    final_out = await self.wait_beam_search_response(out, state, obj)
+                    yield final_out
+                    break
+            elif state.finished:
+                # For non-streaming cases, response has not been sent yet (`response_sent_to_client_ts` has not been set yet).
                 # Record response sent time right before we log finished results and metrics.
                 if not state.time_stats.response_sent_to_client_time:
                     state.time_stats.set_response_sent_to_client_time()
@@ -1511,7 +1490,13 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
                 yield out
                 break
 
-            if is_stream:
+            state.event.clear()
+
+            if obj.stream:
+                # For beam search, skip intermediate results and only yield when finished
+                if out.get("beam_results"):
+                    continue
+
                 # Record response sent time right before we send response.
                 if not state.time_stats.response_sent_to_client_time:
                     state.time_stats.set_response_sent_to_client_time()
@@ -1631,7 +1616,14 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
         is_stream = hasattr(obj, "stream") and obj.stream
         if not is_stream:
             outputs = await asyncio.gather(*(gen.__anext__() for gen in generators))
-            yield outputs
+            # Flatten beam search results: if each output is a list (beam search), flatten [[]] to []
+            if isinstance(outputs[0], list):
+                flattened_outputs = []
+                for output in outputs:
+                    flattened_outputs.extend(output)
+                yield flattened_outputs
+            else:
+                yield outputs
         else:
             rid_to_index = {rid: i for i, rid in enumerate(rids)}
             task_map = {asyncio.create_task(gen.__anext__()): gen for gen in generators}
@@ -1644,8 +1636,17 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
                     gen = task_map.pop(task)
                     try:
                         result = task.result()
-                        result["index"] = rid_to_index[result["meta_info"]["id"]]
-                        yield result
+                        if isinstance(result, list):
+                            # For beam search, only the first element has complete meta_info with id
+                            # All beams in the list belong to the same request
+                            request_id = result[0]["meta_info"]["id"]
+                            index = rid_to_index[request_id]
+                            for beam_result in result:
+                                beam_result["index"] = index
+                                yield beam_result
+                        else:
+                            result["index"] = rid_to_index[result["meta_info"]["id"]]
+                            yield result
                         new_task = asyncio.create_task(gen.__anext__())
                         task_map[new_task] = gen
                     except StopAsyncIteration:
@@ -1870,6 +1871,9 @@ class TokenizerManager(TokenizerControlMixin, TokenizerManagerScoreMixin):
                 if recv_obj.time_stats is not None:
                     scheduler_time_stats = recv_obj.time_stats[i]
                     meta_info.update(scheduler_time_stats.convert_to_output_meta_info())
+
+            if self.handle_beam_search_output(recv_obj, i, rid, state, meta_info):
+                continue
 
             if getattr(state.obj, "return_logprob", False):
                 self.convert_logprob_style(

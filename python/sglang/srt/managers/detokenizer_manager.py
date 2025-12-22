@@ -26,8 +26,7 @@ import setproctitle
 import torch
 import zmq
 
-from sglang.srt.constants import HEALTH_CHECK_RID_PREFIX
-from sglang.srt.environ import envs
+from sglang.srt.managers.beam_search_detokenizer_mixin import BeamSearchDetokenizerMixin
 from sglang.srt.managers.io_struct import (
     BatchEmbeddingOutput,
     BatchStrOutput,
@@ -86,7 +85,7 @@ class DecodeStatus:
         return self.decoded_text
 
 
-class DetokenizerManager(MultiHttpWorkerDetokenizerMixin):
+class DetokenizerManager(BeamSearchDetokenizerMixin, MultiHttpWorkerDetokenizerMixin):
     """DetokenizerManager is a process that detokenizes the token ids."""
 
     def __init__(
@@ -402,14 +401,14 @@ class DetokenizerManager(MultiHttpWorkerDetokenizerMixin):
         ]
 
     def handle_batch_token_id_out(self, recv_obj: BatchTokenIDOutput):
-        # If handling idle batch, set output_strs to [].
-        output_strs = (
-            self._decode_batch_token_id_output(recv_obj)
-            if len(recv_obj.rids) > 0
-            else []
-        )
-        routed_experts = self._b64_encode_per_request(recv_obj.routed_experts)
-        indexer_topk = self._b64_encode_per_request(recv_obj.indexer_topk)
+        if self.is_beam_search_batch(recv_obj):
+            self.decode_beam_search_output(recv_obj)
+            output_strs = [""] * len(recv_obj.rids)
+            output_routed_experts = None
+        else:
+            output_strs = self._decode_batch_token_id_output(recv_obj)
+            output_routed_experts = self._extract_routed_experts(recv_obj)
+
         return BatchStrOutput(
             rids=recv_obj.rids,
             http_worker_ipcs=recv_obj.http_worker_ipcs,
@@ -448,8 +447,12 @@ class DetokenizerManager(MultiHttpWorkerDetokenizerMixin):
             placeholder_tokens_val=None,
             retraction_counts=recv_obj.retraction_counts,
             token_steps=recv_obj.token_steps,
-            dp_ranks=recv_obj.dp_ranks,
-            time_stats=recv_obj.time_stats,
+            queue_time=recv_obj.queue_time,
+            forward_entry_time=recv_obj.forward_entry_time,
+            prefill_launch_delay=recv_obj.prefill_launch_delay,
+            prefill_launch_latency=recv_obj.prefill_launch_latency,
+            prefill_finished_ts=recv_obj.prefill_finished_ts,
+            beam_search_output=recv_obj.beam_search_output,
         )
 
     def handle_freeze_gc_req(self, recv_req: FreezeGCReq):

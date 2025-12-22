@@ -31,8 +31,8 @@ import torch
 from pydantic import PlainValidator
 
 from sglang.srt.lora.lora_registry import LoRARef
-from sglang.srt.managers.embed_types import PositionalEmbeds
-from sglang.srt.managers.schedule_batch import BaseFinishReason, Modality
+from sglang.srt.managers.beam_search_type import BeamSearchSequence
+from sglang.srt.managers.schedule_batch import BaseFinishReason
 from sglang.srt.multimodal.mm_utils import has_valid_data
 from sglang.srt.observability.req_time_stats import (
     APIServerReqTimeStats,
@@ -82,6 +82,48 @@ class BaseBatchReq(ABC):
         """Generate new request IDs and return them."""
         self.rids = [uuid.uuid4().hex for _ in range(len(self.rids))]
         return self.rids
+
+
+@dataclass
+class BeamSearchOutput(BaseBatchReq):
+    sequences: List[BeamSearchSequence]
+
+
+@dataclass
+class RequestTimingMetricsMixin:
+    """
+    Mixin class containing common request-level timing metrics.
+
+    This class consolidates the timing metrics that are shared across all batch output types
+    to avoid code duplication and ensure consistency.
+    """
+
+    # Queue duration: time spent waiting in queue before request is scheduled.
+    queue_time: Optional[List[Optional[float]]]
+
+    # Forward entry time: timestamp when the request enters the forward pass stage.
+    # This corresponds to `forward_entry_time` in TimeStats.
+    # In different modes:
+    #   - Unified/PD-colocate: timestamp when forward computation begins (covers prefill + decode)
+    #   - Prefill instance (P): timestamp when prefill forward pass begins
+    #   - Decode instance (D): timestamp when decode forward pass begins
+    # Note: This is NOT the same as prefill_start_time. There may be a delay between
+    # forward_entry_time and prefill_start_time (see prefill_launch_delay).
+    forward_entry_time: Optional[List[Optional[float]]]
+
+    # Prefill launch delay: time spent waiting between forward entry and prefill start.
+    # Calculated as: prefill_start_time - forward_entry_time
+    # This represents the delay between when the request enters the forward stage
+    # and when prefill computation actually begins.
+    prefill_launch_delay: Optional[List[Optional[float]]]
+
+    # Prefill launch latency: time spent during prefill kernel launch.
+    # Calculated as: prefill_end_time_host - prefill_start_time_host
+    prefill_launch_latency: Optional[List[Optional[float]]]
+
+    # Prefill finished time: timestamp when prefill phase completes (wall clock time).
+    # This marks when the prefill computation finishes.
+    prefill_finished_ts: Optional[List[Optional[float]]]
 
 
 @dataclass
@@ -368,6 +410,19 @@ class GenerateReqInput(BaseReq):
                 self.is_single = False
                 self.batch_size = len(self.input_embeds)
 
+    def _handle_beam_search_parallel_sampling(self) -> int:
+        """Override parallel sampling to 1 when beam search is enabled."""
+        use_beam_search = False
+        if isinstance(self.sampling_params, dict):
+            use_beam_search = self.sampling_params.get("use_beam_search", False)
+        else:  # isinstance(self.sampling_params, list):
+            use_beam_search = self.sampling_params[0].get("use_beam_search", False)
+
+        if use_beam_search and self.parallel_sample_num > 1:
+            return 1
+
+        return self.parallel_sample_num
+
     def _handle_parallel_sampling(self):
         """Handle parallel sampling parameters and adjust batch size if needed."""
         # Determine parallel sample count
@@ -383,6 +438,8 @@ class GenerateReqInput(BaseReq):
                     raise ValueError(
                         "The parallel_sample_num should be the same for all samples in sample params."
                     )
+
+        self.parallel_sample_num = self._handle_beam_search_parallel_sampling()
 
         # If using parallel sampling with a single example, convert to batch
         if self.parallel_sample_num > 1 and self.is_single:
@@ -1176,6 +1233,9 @@ class BatchTokenIDOutput(BaseBatchReq, SpeculativeDecodingMetricsMixin):
     # Number of times each request was retracted.
     retraction_counts: List[int]
 
+    # beam search
+    beam_search_output: List[BeamSearchOutput]
+
     # The trainer step id. Used to know which step's weights are used for sampling.
     token_steps: List[List[int]] = None
 
@@ -1243,6 +1303,9 @@ class BatchStrOutput(BaseBatchReq, SpeculativeDecodingMetricsMixin):
 
     # Number of times each request was retracted.
     retraction_counts: List[int]
+
+    # beam search
+    beam_search_output: List[BeamSearchOutput]
 
     # The trainer step id. Used to know which step's weights are used for sampling.
     token_steps: List[List[int]] = None
