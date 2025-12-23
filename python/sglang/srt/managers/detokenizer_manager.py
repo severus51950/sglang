@@ -26,6 +26,7 @@ import setproctitle
 import torch
 import zmq
 
+from sglang.srt.environ import envs
 from sglang.srt.managers.beam_search_detokenizer_mixin import BeamSearchDetokenizerMixin
 from sglang.srt.managers.io_struct import (
     BatchEmbeddingOutput,
