@@ -2606,7 +2606,7 @@ class ScheduleBatch(
         # prefill-time tensor so it doesn't leak into ForwardBatch.
         self.input_embeds = None
 
-        if self.reqs[0].is_beam_search:
+        if self.reqs and self.reqs[0].is_beam_search:
             self.prepare_for_beam_search_decode()
             return
 
@@ -2691,7 +2691,7 @@ class ScheduleBatch(
         # The batch has been launched but we need it verified to get correct next batch info
         self.maybe_wait_verify_done()
 
-        if self.reqs[0].is_beam_search:
+        if self.reqs and self.reqs[0].is_beam_search:
             self.filter_beam_search_batch(
                 chunked_req_to_exclude=chunked_req_to_exclude,
                 keep_indices=keep_indices,
@@ -2903,7 +2903,7 @@ class ScheduleBatch(
             mamba_track_indices=self.mamba_track_indices,
             mamba_track_mask=self.mamba_track_mask,
             mamba_track_seqlens=self.mamba_track_seqlens,
-            is_beam_search=len(self.reqs) > 0 and self.reqs[0].is_beam_search,
+            is_beam_search=self.reqs and self.reqs[0].is_beam_search,
         )
 
     def copy(self):
