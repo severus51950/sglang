@@ -1872,7 +1872,7 @@ class TokenizerManager(
                     scheduler_time_stats = recv_obj.time_stats[i]
                     meta_info.update(scheduler_time_stats.convert_to_output_meta_info())
 
-            if self.handle_beam_search_output(recv_obj, i, rid, state, meta_info):
+            if self.maybe_handle_beam_search_output(recv_obj, i, rid, state, meta_info):
                 continue
 
             if getattr(state.obj, "return_logprob", False):
