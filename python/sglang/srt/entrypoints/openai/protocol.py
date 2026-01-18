@@ -360,7 +360,6 @@ class CompletionRequest(BaseModel):
     response_format: Optional[Union[ResponseFormat, StructuralTagResponseFormat]] = None
     custom_params: Optional[Dict] = None
     custom_logit_processor: Optional[str] = None
-    use_beam_search: bool = False
 
     # For PD disaggregation
     bootstrap_host: Optional[Union[List[str], str]] = None
@@ -737,7 +736,6 @@ class ChatCompletionRequest(BaseModel):
     separate_reasoning: bool = True
     stream_reasoning: bool = True
     chat_template_kwargs: Optional[Dict] = None
-    use_beam_search: bool = False
 
     # SGLang multimodal controls (extensions)
     max_dynamic_patch: Optional[int] = None
@@ -919,7 +917,6 @@ class ChatCompletionRequest(BaseModel):
             "logit_bias": self.logit_bias,
             "custom_params": self.custom_params,
             "sampling_seed": self.seed,
-            "use_beam_search": self.use_beam_search,
         }
 
         if self.response_format and self.response_format.type == "json_schema":
