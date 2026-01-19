@@ -682,8 +682,7 @@ class Req(ReqBeamSearchMixin):
         require_reasoning: bool = False,
         return_hidden_states: bool = False,
         return_routed_experts: bool = False,
-        routed_experts_start_len: int = 0,
-        return_indexer_topk: bool = False,
+        is_beam_search: bool = False,
         eos_token_ids: Optional[Set[int]] = None,
         bootstrap_host: Optional[str] = None,
         bootstrap_port: Optional[int] = None,
@@ -1005,7 +1004,7 @@ class Req(ReqBeamSearchMixin):
         self.dimensions = dimensions
 
         # beam search (initialized via mixin)
-        self._init_beam_search_attributes(self.sampling_params)
+        self._init_beam_search_attributes(is_beam_search, self.sampling_params)
 
         # For diffusion LLM
         self.init_diffusion_llm(dllm_config)
