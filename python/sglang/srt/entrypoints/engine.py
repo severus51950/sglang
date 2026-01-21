@@ -384,7 +384,6 @@ class Engine(EngineScoreMixin, EngineBase):
             disagg_prefill_dp_rank=disagg_prefill_dp_rank,
             external_trace_header=external_trace_header,
             rid=rid,
-            enable_beam_search=self.server_args.enable_beam_search,
         )
         generator = self.tokenizer_manager.generate_request(obj, None)
 
