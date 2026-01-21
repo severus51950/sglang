@@ -40,7 +40,6 @@ from sglang.srt.observability.req_time_stats import (
     SchedulerReqTimeStats,
 )
 from sglang.srt.sampling.sampling_params import SamplingParams
-from sglang.srt.server_args import get_global_server_args
 from sglang.srt.utils import ImageData
 
 # Handle serialization of Image for pydantic
@@ -322,9 +321,8 @@ class GenerateReqInput(BaseReq):
     image_max_dynamic_patch: Optional[int] = None
     video_max_dynamic_patch: Optional[int] = None
 
-    # Pre-computed delimiter indices for multi-item scoring.
-    # Batch-level: List[List[int]] (one per request). After __getitem__: List[int].
-    multi_item_delimiter_indices: Optional[Union[List[List[int]], List[int]]] = None
+    # beam search
+    enable_beam_search: bool = False
 
     def contains_mm_input(self) -> bool:
         return (
@@ -412,7 +410,7 @@ class GenerateReqInput(BaseReq):
 
     def _handle_beam_search_parallel_sampling(self) -> int:
         """Override parallel sampling to 1 when beam search is enabled and check that n (beam_width) must be greater than 1."""
-        if not get_global_server_args().enable_beam_search:
+        if not self.enable_beam_search:
             return self.parallel_sample_num
 
         if self.parallel_sample_num <= 1:
