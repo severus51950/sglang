@@ -618,16 +618,10 @@ class TokenizerManager(
 
             if obj.is_single:
                 tokenized_obj = await self._tokenize_one_request(obj)
-                state = self._send_one_request(obj, tokenized_obj, created_time)
-                is_stream = hasattr(obj, "stream") and obj.stream
+                state = self.rid_to_state[obj.rid]
+                self._send_one_request(tokenized_obj)
                 async for response in self._wait_one_response(obj, state, request):
-                    if isinstance(response, list) and is_stream:
-                        # Beam search response is a list of beam results
-                        # Stream: yield each beam result individually
-                        for beam_result in response:
-                            yield beam_result
-                    else:
-                        yield response
+                    yield response
             else:
                 async for response in self._handle_batch_request(
                     obj, request, created_time
@@ -1454,13 +1448,17 @@ class TokenizerManager(
             out_list = state.out_list
             state.out_list = []
 
+            # If this is a beam search result, convert it to a regular out dict so
+            # all subsequent finished/logging/metrics logic is shared automatically.
             if out.get("beam_results"):
-                if state.finished:
-                    final_out = await self.wait_beam_search_response(out, state, obj)
-                    yield final_out
-                    break
-            elif state.finished:
-                # For non-streaming cases, response has not been sent yet (`response_sent_to_client_ts` has not been set yet).
+                if not state.finished:
+                    # Intermediate beam search output — skip until finished
+                    state.event.clear()
+                    continue
+                out = self.build_beam_search_out(out)
+
+            if state.finished:
+                # For non-streaming cases, response has not been sent yet (`response_sent_to_client_time` has not been set yet).
                 # Record response sent time right before we log finished results and metrics.
                 if not state.time_stats.response_sent_to_client_time:
                     state.time_stats.set_response_sent_to_client_time()
@@ -1492,11 +1490,7 @@ class TokenizerManager(
 
             state.event.clear()
 
-            if obj.stream:
-                # For beam search, skip intermediate results and only yield when finished
-                if out.get("beam_results"):
-                    continue
-
+            if is_stream:
                 # Record response sent time right before we send response.
                 if not state.time_stats.response_sent_to_client_time:
                     state.time_stats.set_response_sent_to_client_time()
@@ -1616,14 +1610,7 @@ class TokenizerManager(
         is_stream = hasattr(obj, "stream") and obj.stream
         if not is_stream:
             outputs = await asyncio.gather(*(gen.__anext__() for gen in generators))
-            # Flatten beam search results: if each output is a list (beam search), flatten [[]] to []
-            if outputs and isinstance(outputs[0], list):
-                flattened_outputs = []
-                for output in outputs:
-                    flattened_outputs.extend(output)
-                yield flattened_outputs
-            else:
-                yield outputs
+            yield outputs
         else:
             rid_to_index = {rid: i for i, rid in enumerate(rids)}
             task_map = {asyncio.create_task(gen.__anext__()): gen for gen in generators}
@@ -1636,17 +1623,8 @@ class TokenizerManager(
                     gen = task_map.pop(task)
                     try:
                         result = task.result()
-                        if isinstance(result, list) and result:
-                            # For beam search, only the first element has complete meta_info with id
-                            # All beams in the list belong to the same request
-                            request_id = result[0]["meta_info"]["id"]
-                            index = rid_to_index[request_id]
-                            for beam_result in result:
-                                beam_result["index"] = index
-                                yield beam_result
-                        else:
-                            result["index"] = rid_to_index[result["meta_info"]["id"]]
-                            yield result
+                        result["index"] = rid_to_index[result["meta_info"]["id"]]
+                        yield result
                         new_task = asyncio.create_task(gen.__anext__())
                         task_map[new_task] = gen
                     except StopAsyncIteration:
@@ -1872,9 +1850,6 @@ class TokenizerManager(
                     scheduler_time_stats = recv_obj.time_stats[i]
                     meta_info.update(scheduler_time_stats.convert_to_output_meta_info())
 
-            if self.maybe_handle_beam_search_output(recv_obj, i, rid, state, meta_info):
-                continue
-
             if getattr(state.obj, "return_logprob", False):
                 self.convert_logprob_style(
                     meta_info,
@@ -1943,8 +1918,13 @@ class TokenizerManager(
             if getattr(recv_obj, "dp_ranks", None):
                 meta_info["dp_rank"] = recv_obj.dp_ranks[i]
 
-            state.finished = recv_obj.finished_reasons[i] is not None
-            if isinstance(recv_obj, BatchStrOutput):
+            # Build beam search out dict after meta_info is fully populated,
+            beam_out_dict = self.try_build_beam_search_out_dict(recv_obj, i, meta_info)
+
+            if beam_out_dict is not None:
+                out_dict = beam_out_dict
+            elif isinstance(recv_obj, BatchStrOutput):
+                state.text += recv_obj.output_strs[i]
                 # Not all request types have `stream` (e.g., EmbeddingReqInput). Default to non-streaming.
                 is_stream = getattr(state.obj, "stream", False)
                 incremental = (
