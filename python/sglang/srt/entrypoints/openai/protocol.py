@@ -422,15 +422,15 @@ class CompletionResponseChoice(BaseModel):
     finish_reason: Optional[Literal["stop", "length", "content_filter", "abort"]] = None
     matched_stop: Union[None, int, str] = None
     hidden_states: Optional[object] = None
-    sgl_ext: Optional[SglExt] = None
+    sglext: Optional[SglExt] = None
 
     @model_serializer(mode="wrap")
     def _serialize(self, handler):
         data = handler(self)
         if self.hidden_states is None:
             data.pop("hidden_states", None)
-        if self.sgl_ext is None:
-            data.pop("sgl_ext", None)
+        if self.sglext is None:
+            data.pop("sglext", None)
         return data
 
 
@@ -459,15 +459,15 @@ class CompletionResponseStreamChoice(BaseModel):
     finish_reason: Optional[Literal["stop", "length", "content_filter", "abort"]] = None
     matched_stop: Union[None, int, str] = None
     hidden_states: Optional[object] = None
-    sgl_ext: Optional[SglExt] = None
+    sglext: Optional[SglExt] = None
 
     @model_serializer(mode="wrap")
     def _serialize(self, handler):
         data = handler(self)
         if self.hidden_states is None:
             data.pop("hidden_states", None)
-        if self.sgl_ext is None:
-            data.pop("sgl_ext", None)
+        if self.sglext is None:
+            data.pop("sglext", None)
         return data
 
 
@@ -974,15 +974,15 @@ class ChatCompletionResponseChoice(BaseModel):
     ] = None
     matched_stop: Union[None, int, str] = None
     hidden_states: Optional[object] = None
-    sgl_ext: Optional[SglExt] = None
+    sglext: Optional[SglExt] = None
 
     @model_serializer(mode="wrap")
     def _serialize(self, handler):
         data = handler(self)
         if self.hidden_states is None:
             data.pop("hidden_states", None)
-        if self.sgl_ext is None:
-            data.pop("sgl_ext", None)
+        if self.sglext is None:
+            data.pop("sglext", None)
         return data
 
 
@@ -1029,13 +1029,13 @@ class ChatCompletionResponseStreamChoice(BaseModel):
         ]
     ] = None
     matched_stop: Union[None, int, str] = None
-    sgl_ext: Optional[SglExt] = None
+    sglext: Optional[SglExt] = None
 
     @model_serializer(mode="wrap")
     def _serialize(self, handler):
         data = handler(self)
-        if self.sgl_ext is None:
-            data.pop("sgl_ext", None)
+        if self.sglext is None:
+            data.pop("sglext", None)
         return data
 
 
