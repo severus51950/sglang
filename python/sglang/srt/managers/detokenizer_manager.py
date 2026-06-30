@@ -28,6 +28,7 @@ import zmq
 
 from sglang.srt.constants import HEALTH_CHECK_RID_PREFIX
 from sglang.srt.environ import envs
+from sglang.srt.managers.beam_search_detokenizer_mixin import BeamSearchDetokenizerMixin
 from sglang.srt.managers.io_struct import (
     BatchEmbeddingOutput,
     BatchStrOutput,

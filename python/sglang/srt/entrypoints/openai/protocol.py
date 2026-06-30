@@ -406,6 +406,7 @@ class SglExt(BaseModel):
     """
 
     routed_experts: Optional[str] = None
+    sequence_score: Optional[float] = None  # Score for this sequence in beam search
     cached_tokens_details: Optional[CachedTokensDetails] = None
 
     @model_serializer(mode="wrap")
@@ -422,12 +423,15 @@ class CompletionResponseChoice(BaseModel):
     finish_reason: Optional[Literal["stop", "length", "content_filter", "abort"]] = None
     matched_stop: Union[None, int, str] = None
     hidden_states: Optional[object] = None
+    sglext: Optional[SglExt] = None
 
     @model_serializer(mode="wrap")
     def _serialize(self, handler):
         data = handler(self)
         if self.hidden_states is None:
             data.pop("hidden_states", None)
+        if self.sglext is None:
+            data.pop("sglext", None)
         return data
 
 
@@ -456,12 +460,15 @@ class CompletionResponseStreamChoice(BaseModel):
     finish_reason: Optional[Literal["stop", "length", "content_filter", "abort"]] = None
     matched_stop: Union[None, int, str] = None
     hidden_states: Optional[object] = None
+    sglext: Optional[SglExt] = None
 
     @model_serializer(mode="wrap")
     def _serialize(self, handler):
         data = handler(self)
         if self.hidden_states is None:
             data.pop("hidden_states", None)
+        if self.sglext is None:
+            data.pop("sglext", None)
         return data
 
 
@@ -1027,6 +1034,14 @@ class ChatCompletionResponseStreamChoice(BaseModel):
         ]
     ] = None
     matched_stop: Union[None, int, str] = None
+    sglext: Optional[SglExt] = None
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler):
+        data = handler(self)
+        if self.sglext is None:
+            data.pop("sglext", None)
+        return data
 
 
 class ChatCompletionStreamResponse(BaseModel):

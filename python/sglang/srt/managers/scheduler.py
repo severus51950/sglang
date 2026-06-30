@@ -2015,13 +2015,15 @@ class Scheduler(
                 # Use default bootstrap port
                 recv_req.bootstrap_port = self.server_args.disaggregation_bootstrap_port
 
+            # beam search not support return logprob
+            is_beam_search = self.server_args.enable_beam_search
             req = Req(
                 recv_req.rid,
                 recv_req.input_text,
                 recv_req.input_ids,
                 recv_req.sampling_params,
-                return_logprob=recv_req.return_logprob,
-                top_logprobs_num=recv_req.top_logprobs_num,
+                return_logprob=recv_req.return_logprob if not is_beam_search else False,
+                top_logprobs_num=recv_req.top_logprobs_num if not is_beam_search else 0,
                 token_ids_logprob=recv_req.token_ids_logprob,
                 stream=recv_req.stream,
                 lora_id=recv_req.lora_id,

@@ -377,6 +377,8 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
     return_logprob: bool = False
     # Whether this batch is prefill-only (no token generation needed)
     is_prefill_only: bool = False
+    # Whether this batch is running beam search.
+    is_beam_search: bool = False
     spec_algorithm: SpeculativeAlgorithm = None
     # For matryoshka embeddings
     dimensions: Optional[list[int]] = None
@@ -697,6 +699,7 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
             can_run_dp_breakable_cuda_graph=batch.can_run_dp_breakable_cuda_graph,
             global_forward_mode=batch.global_forward_mode,
             is_prefill_only=batch.is_prefill_only,
+            is_beam_search=bool(batch.reqs and batch.reqs[0].is_beam_search),
             spec_algorithm=batch.spec_algorithm,
             capture_hidden_mode=capture_hidden_mode,
             return_hidden_states_before_norm=return_hidden_states_before_norm,

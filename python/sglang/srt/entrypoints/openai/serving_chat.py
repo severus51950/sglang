@@ -24,6 +24,7 @@ from fastapi.responses import ORJSONResponse, StreamingResponse
 from jsonschema import Draft202012Validator, SchemaError
 
 from sglang.srt.entrypoints.openai import encoding_dsv4, encoding_dsv32
+from sglang.srt.entrypoints.openai.openai_beam_search_mixin import OpenAIBeamSearchMixin
 from sglang.srt.entrypoints.openai.protocol import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -156,7 +157,7 @@ def _extract_max_dynamic_patch(request: ChatCompletionRequest):
     return img_max_dynamic_patch, vid_max_dynamic_patch
 
 
-class OpenAIServingChat(OpenAIServingBase):
+class OpenAIServingChat(OpenAIBeamSearchMixin, OpenAIServingBase):
     """Handler for /v1/chat/completions requests"""
 
     _default_sampling_params_logged = False
@@ -972,6 +973,13 @@ class OpenAIServingChat(OpenAIServingBase):
         raw_request: Request,
     ) -> AsyncGenerator[str, None]:
         """Generate streaming chat completion response"""
+        if self.tokenizer_manager.server_args.enable_beam_search and request.n > 1:
+            async for chunk in self._generate_chat_beam_search_stream(
+                adapted_request, request, raw_request
+            ):
+                yield chunk
+            return
+
         # Parsers for tool calls and reasoning
         parser_dict = {}
         reasoning_parser_dict = {}
@@ -1236,6 +1244,9 @@ class OpenAIServingChat(OpenAIServingBase):
         created: int,
     ) -> Union[ChatCompletionResponse, ORJSONResponse]:
         """Build chat completion response from generation results"""
+        if self.tokenizer_manager.server_args.enable_beam_search and request.n > 1:
+            return self._build_chat_beam_search_response(request, ret, created)
+
         choices = []
 
         # Build sglext at response level (from first ret_item, as these are per-request)

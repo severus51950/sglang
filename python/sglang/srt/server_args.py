@@ -1211,6 +1211,10 @@ class ServerArgs:
         bool,
         "Allow automatically truncating requests that exceed the maximum input length instead of returning an error.",
     ] = False
+    enable_beam_search: A[
+        bool,
+        "Enable experimental beam search support. This option is introduced by PR #15645.",
+    ] = False
 
     # -------------------------------------------------------------------------
     # Prefill delayer
@@ -2613,6 +2617,9 @@ class ServerArgs:
         # Handle debug utilities.
         self._handle_debug_utils()
 
+        # Handle beam search mode.
+        self._handle_beam_search()
+
         # Handle any other necessary validations.
         self._handle_other_validations()
 
@@ -2626,6 +2633,21 @@ class ServerArgs:
             and self.tokenizer_path != self.model_path
         ):
             ObjectStorageModel.download_and_get_path(self.tokenizer_path)
+
+    def _handle_beam_search(self):
+        """Normalize experimental beam-search settings.
+
+        PR #15645 adds the flag and downstream code checks it in multiple places.  Keep
+        the handler conservative on the v0.5.14 rebase path so non-beam-search serving
+        remains unchanged, while still making ServerArgs construction safe.
+        """
+        if not self.enable_beam_search:
+            return
+
+        # Beam search uses its own request expansion path and is incompatible with
+        # these scheduling optimizations in the feature branch.
+        self.disable_overlap_schedule = True
+        self.chunked_prefill_size = -1
 
     def _handle_load_balance_method(self):
         if self.disaggregation_mode not in ("null", "prefill", "decode"):

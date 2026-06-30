@@ -72,6 +72,10 @@ from sglang.srt.hardware_backend.npu.dsv4.dsv4_common_hooks import (
     maybe_evict_dsv4_state,
 )
 from sglang.srt.managers.embed_types import PositionalEmbeds
+from sglang.srt.managers.schedule_batch_beam_search_mixin import (
+    ReqBeamSearchMixin,
+    ScheduleBatchBeamSearchMixin,
+)
 from sglang.srt.managers.scheduler_components.new_token_ratio_tracker import (
     NewTokenRatioTracker,
 )
@@ -663,7 +667,7 @@ class ReqLogprob:
     output_token_ids_logprobs_idx: Optional[list] = None
 
 
-class Req(ReqDllmMixin):
+class Req(ReqDllmMixin, ReqBeamSearchMixin):
     """The input and output status of a request."""
 
     def __init__(
@@ -708,6 +712,7 @@ class Req(ReqDllmMixin):
         ] = None,
         return_pooled_hidden_states: bool = False,
         multi_item_delimiter_indices: Optional[List[int]] = None,
+        is_beam_search: bool = False,
     ):
         # Input and output info
         self.rid = rid
@@ -1008,6 +1013,9 @@ class Req(ReqDllmMixin):
 
         # For Matryoshka embeddings
         self.dimensions = dimensions
+
+        # beam search (initialized via mixin)
+        self._init_beam_search_attributes(is_beam_search, self.sampling_params)
 
         # Whether to return pooled hidden states (pre-head transformer output)
         self.return_pooled_hidden_states = return_pooled_hidden_states
@@ -1668,7 +1676,7 @@ def _compute_chunked_req_next_prompt_token(
 
 
 @dataclasses.dataclass
-class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin):
+class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin, ScheduleBatchBeamSearchMixin):
     """Store all information of a batch on the scheduler."""
 
     # === Core: request list (ForwardBatch derives lora_ids / rids / grammars / positions from it) ===
