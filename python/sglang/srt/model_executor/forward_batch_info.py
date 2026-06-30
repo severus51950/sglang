@@ -706,7 +706,6 @@ class ForwardBatch(ForwardBatchDeepSeekMHAMixin):
             tbo_split_seq_index=batch.tbo_split_seq_index,
             dimensions=batch.dimensions,
             is_beam_search=batch.is_beam_search,
-            return_hidden_states_before_norm=batch.return_hidden_states_before_norm,
         )
 
         ret._maybe_init_non_generation_fields(batch)
