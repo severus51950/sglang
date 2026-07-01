@@ -395,10 +395,42 @@ class DecodeCudaGraphRunner(BaseCudaGraphRunner):
             return "lora"
         return "nolora"
 
+    def _get_cuda_graph_raw_bs(self, forward_batch: ForwardBatch) -> int:
+        """Return the physical decode batch size consumed by CUDA graph buffers.
+
+        For normal decode, ``ForwardBatch.batch_size`` is the number of running
+        requests and also the number of decode rows. Beam search is different:
+        one logical request expands to ``beam_width`` physical decode rows, so
+        the bs-axis tensors (``req_pool_indices``/``seq_lens``/``positions``)
+        have length ``num_requests * beam_width``. Use the tensor length for
+        graph bucket selection and buffer copies, otherwise the registry tries
+        to copy a beam-expanded source (e.g. 95 rows) into a logical-request
+        destination slice (e.g. 19 rows).
+        """
+        if forward_batch.req_pool_indices is not None:
+            physical_bs = len(forward_batch.req_pool_indices)
+            if forward_batch.is_beam_search:
+                return physical_bs
+            # Some beam-search decode batches can reach the graph runner after
+            # logical request filtering with ``ForwardBatch.is_beam_search`` not
+            # set, while their bs-axis tensors are still beam-expanded. Detect
+            # the physical-row layout from tensor shapes so the graph path stays
+            # aligned with eager decode.
+            if (
+                forward_batch.forward_mode.is_decode()
+                and physical_bs > forward_batch.batch_size
+                and forward_batch.input_ids is not None
+                and forward_batch.input_ids.numel()
+                == physical_bs * self.num_tokens_per_bs
+            ):
+                return physical_bs
+        return forward_batch.batch_size
+
     def can_run_graph(self, forward_batch: ForwardBatch):
         # Disable for token embedding overrides (dynamic per-request)
         if forward_batch.replace_embeds is not None:
             return False
+        raw_bs = self._get_cuda_graph_raw_bs(forward_batch)
         if self.require_mlp_tp_gather:
             cuda_graph_bs = (
                 max(forward_batch.global_num_tokens_cpu) // self.num_tokens_per_bs
@@ -408,7 +440,7 @@ class DecodeCudaGraphRunner(BaseCudaGraphRunner):
                 else max(forward_batch.global_num_tokens_cpu)
             )
         else:
-            cuda_graph_bs = forward_batch.batch_size
+            cuda_graph_bs = raw_bs
 
         graph_key = cuda_graph_bs
         if self.enable_pdmux:
@@ -451,7 +483,7 @@ class DecodeCudaGraphRunner(BaseCudaGraphRunner):
 
         is_ngram_supported = (
             (
-                forward_batch.batch_size * self.num_tokens_per_bs
+                raw_bs * self.num_tokens_per_bs
                 == forward_batch.input_ids.numel()
             )
             if self.model_runner.spec_algorithm.is_ngram()
@@ -891,7 +923,7 @@ class DecodeCudaGraphRunner(BaseCudaGraphRunner):
         buffers = self.buffers
         self.recapture_if_needed(forward_batch)
 
-        raw_bs = forward_batch.batch_size
+        raw_bs = self._get_cuda_graph_raw_bs(forward_batch)
         raw_num_token = raw_bs * self.num_tokens_per_bs
 
         if self.require_mlp_tp_gather:
