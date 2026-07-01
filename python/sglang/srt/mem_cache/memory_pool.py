@@ -287,10 +287,27 @@ class ReqToTokenPool:
                 offset += 1
         return [r.req_pool_idx for r in reqs]
 
+    def alloc_by_count(self, n: int) -> Optional[List[int]]:
+        """Allocate raw pool slots without binding them to Req objects.
+
+        Beam search expands one logical request into multiple beam branches, so it
+        needs req_to_token rows for each branch while keeping the original Req's
+        req_pool_idx unchanged for normal request lifecycle cleanup.
+        """
+        if n > len(self.free_slots):
+            return None
+        select_index = self.free_slots[:n]
+        self.free_slots = self.free_slots[n:]
+        return select_index
+
     def free(self, req: Req):
         assert req.req_pool_idx is not None, "request must have req_pool_idx"
         self.free_slots.append(req.req_pool_idx)
         req.req_pool_idx = None
+
+    def free_by_indices(self, indices: List[int]):
+        """Free raw pool slots that are not attached to Req.req_pool_idx."""
+        self.free_slots.extend(indices)
 
     def clear(self):
         self.free_slots = list(range(1, self._alloc_size))

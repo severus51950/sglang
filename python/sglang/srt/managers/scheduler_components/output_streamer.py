@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import (
     Any,
     Callable,
@@ -18,6 +18,7 @@ from sglang.srt.environ import envs
 from sglang.srt.managers.io_struct import (
     BatchEmbeddingOutput,
     BatchTokenIDOutput,
+    BeamSearchOutput,
 )
 from sglang.srt.managers.schedule_batch import (
     BaseFinishReason,
@@ -289,6 +290,7 @@ class _GenerationStreamAccumulator:
     input_token_ids_logprobs_idx: Optional[list] = None
     output_token_ids_logprobs_val: Optional[list] = None
     output_token_ids_logprobs_idx: Optional[list] = None
+    beam_search_output: Optional[list] = None
 
     def __post_init__(self) -> None:
         if self.return_hidden_states:
@@ -311,6 +313,7 @@ class _GenerationStreamAccumulator:
             self.input_token_ids_logprobs_idx = []
             self.output_token_ids_logprobs_val = []
             self.output_token_ids_logprobs_idx = []
+        self.beam_search_output = []
 
     def accept(self, *, req: Req) -> None:
         if req.finished():
@@ -369,7 +372,28 @@ class _GenerationStreamAccumulator:
         self.no_stop_trim.append(req.sampling_params.no_stop_trim)
         self.prompt_tokens.append(len(req.origin_input_ids))
         self.reasoning_tokens.append(req.reasoning_tokens)
-        self.completion_tokens.append(len(output_ids_))
+        if req.is_beam_search:
+            self.completion_tokens.append(
+                sum(len(beam_seq.tokens) for beam_seq in req.beam_list.completed)
+            )
+            self.beam_search_output.append(
+                BeamSearchOutput(
+                    sequences=[
+                        replace(
+                            beam_seq,
+                            finish_reason=(
+                                beam_seq.finish_reason.to_json()
+                                if beam_seq.finish_reason
+                                else None
+                            ),
+                        )
+                        for beam_seq in req.beam_list.completed
+                    ]
+                )
+            )
+        else:
+            self.completion_tokens.append(len(output_ids_))
+            self.beam_search_output.append(None)
         self.cached_tokens.append(req.cached_tokens)
 
         # Collect detailed cache breakdown if available
@@ -542,6 +566,11 @@ class _GenerationStreamAccumulator:
             output_hidden_states=self.output_hidden_states,
             routed_experts=self.routed_experts,
             indexer_topk=self.indexer_topk,
+            beam_search_output=(
+                self.beam_search_output
+                if any(output is not None for output in self.beam_search_output)
+                else None
+            ),
             customized_info=self.customized_info,
             placeholder_tokens_idx=None,
             placeholder_tokens_val=None,

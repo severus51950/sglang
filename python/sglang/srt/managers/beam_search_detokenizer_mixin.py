@@ -21,13 +21,17 @@ class BeamSearchDetokenizerMixin:
         """Check if the batch contains beam search requests."""
         return (
             recv_obj.beam_search_output is not None
-            and len(recv_obj.beam_search_output) > 0
+            and any(
+                beam_output is not None for beam_output in recv_obj.beam_search_output
+            )
         )
 
     def decode_beam_search_output(self, recv_obj: BatchTokenIDOutput):
         """Decode beam search candidate sequences to text."""
         if self.disable_tokenizer_batch_decode:
             for i, beam_output in enumerate(recv_obj.beam_search_output):
+                if beam_output is None:
+                    continue
                 for beam in beam_output.sequences:
                     trimmed_tokens = self.trim_matched_stop(
                         beam.tokens,
@@ -44,6 +48,8 @@ class BeamSearchDetokenizerMixin:
         else:
             beam_ids = []
             for i, beam_output in enumerate(recv_obj.beam_search_output):
+                if beam_output is None:
+                    continue
                 for beam in beam_output.sequences:
                     beam_ids.append(
                         self.trim_matched_stop(
@@ -60,6 +66,8 @@ class BeamSearchDetokenizerMixin:
 
             i = 0
             for beam_output in recv_obj.beam_search_output:
+                if beam_output is None:
+                    continue
                 for beam in beam_output.sequences:
                     beam.text = beam_texts[i]
                     i += 1

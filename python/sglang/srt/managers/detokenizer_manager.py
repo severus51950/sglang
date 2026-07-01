@@ -87,7 +87,7 @@ class DecodeStatus:
         return self.decoded_text
 
 
-class DetokenizerManager(MultiHttpWorkerDetokenizerMixin):
+class DetokenizerManager(BeamSearchDetokenizerMixin, MultiHttpWorkerDetokenizerMixin):
     """DetokenizerManager is a process that detokenizes the token ids."""
 
     def __init__(
@@ -403,12 +403,16 @@ class DetokenizerManager(MultiHttpWorkerDetokenizerMixin):
         ]
 
     def handle_batch_token_id_out(self, recv_obj: BatchTokenIDOutput):
-        # If handling idle batch, set output_strs to [].
-        output_strs = (
-            self._decode_batch_token_id_output(recv_obj)
-            if len(recv_obj.rids) > 0
-            else []
-        )
+        if self.is_beam_search_batch(recv_obj):
+            self.decode_beam_search_output(recv_obj)
+            output_strs = [""] * len(recv_obj.rids)
+        else:
+            # If handling idle batch, set output_strs to [].
+            output_strs = (
+                self._decode_batch_token_id_output(recv_obj)
+                if len(recv_obj.rids) > 0
+                else []
+            )
         routed_experts = self._b64_encode_per_request(recv_obj.routed_experts)
         indexer_topk = self._b64_encode_per_request(recv_obj.indexer_topk)
         return BatchStrOutput(
@@ -448,6 +452,7 @@ class DetokenizerManager(MultiHttpWorkerDetokenizerMixin):
             placeholder_tokens_idx=None,
             placeholder_tokens_val=None,
             retraction_counts=recv_obj.retraction_counts,
+            beam_search_output=recv_obj.beam_search_output,
             token_steps=recv_obj.token_steps,
             dp_ranks=recv_obj.dp_ranks,
             time_stats=recv_obj.time_stats,

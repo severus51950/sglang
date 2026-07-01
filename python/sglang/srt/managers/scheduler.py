@@ -209,6 +209,9 @@ from sglang.srt.managers.scheduler_components.request_receiver import (
 from sglang.srt.managers.scheduler_components.weight_updater import (
     SchedulerWeightUpdaterManager,
 )
+from sglang.srt.managers.scheduler_beam_search_processor_mixin import (
+    SchedulerBeamSearchProcessorMixin,
+)
 from sglang.srt.managers.scheduler_input_blocker import SchedulerInputBlocker
 from sglang.srt.managers.scheduler_pp_mixin import SchedulerPPMixin
 from sglang.srt.managers.scheduler_recv_skipper import SchedulerRecvSkipper
@@ -290,6 +293,7 @@ _is_npu = is_npu()
 
 
 class Scheduler(
+    SchedulerBeamSearchProcessorMixin,
     SchedulerDisaggregationDecodeMixin,
     SchedulerDisaggregationPrefillMixin,
     SchedulerMultiplexMixin,
@@ -2056,6 +2060,7 @@ class Scheduler(
                 dllm_config=self.dllm_config,
                 time_stats=recv_req.time_stats,
                 multi_item_delimiter_indices=recv_req.multi_item_delimiter_indices,
+                is_beam_search=is_beam_search,
             )
             req.tokenizer = self.tokenizer
 
@@ -3374,12 +3379,17 @@ class Scheduler(
         self.publish_load_snapshot(force=batch.forward_mode.is_extend())
 
         if batch.forward_mode.is_decode():
-            self.batch_result_processor.process_batch_result_decode(batch, result)
+            if batch.reqs and batch.reqs[0].is_beam_search:
+                self.process_beam_search_decode_result(batch, result)
+            else:
+                self.batch_result_processor.process_batch_result_decode(batch, result)
         elif batch.forward_mode.is_extend():
             if batch.is_dllm():
                 self.process_batch_result_dllm(batch, result)
             elif self.disaggregation_mode == DisaggregationMode.PREFILL:
                 self.process_batch_result_disagg_prefill(batch, result)
+            elif batch.reqs and batch.reqs[0].is_beam_search:
+                self.process_beam_search_prefill_result(batch, result.logits_output)
             else:
                 self.batch_result_processor.process_batch_result_prefill(batch, result)
         elif batch.forward_mode.is_prebuilt():

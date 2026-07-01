@@ -2622,6 +2622,10 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin, ScheduleBatchBeamSea
         if hasattr(self, "attn_cp_metadata") and self.attn_cp_metadata is not None:
             self.attn_cp_metadata = None
 
+        if self.reqs and self.reqs[0].is_beam_search:
+            self.prepare_for_beam_search_decode()
+            return
+
         if not self.spec_algorithm.is_none():
             # Spec decoding: the draft input owns decode preparation
             # (allocation, pre-claim, seq-lens bookkeeping).

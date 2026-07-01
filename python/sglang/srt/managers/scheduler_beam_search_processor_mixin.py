@@ -54,6 +54,38 @@ class SchedulerBeamSearchProcessorMixin:
     Manages KV cache operations and completion detection for beam search requests.
     """
 
+    def _stream_beam_search_output(self, reqs, return_logprob, skip_req=None):
+        if hasattr(self, "output_streamer"):
+            self.output_streamer.stream_output(reqs, return_logprob, skip_req)
+        else:
+            # Compatibility for the standalone mixin unit tests from PR #15645.
+            self.stream_output(reqs, return_logprob, skip_req)
+
+    def _increment_beam_search_generated_tokens(self, batch):
+        if hasattr(self, "metrics_reporter"):
+            self.metrics_reporter.num_generated_tokens += len(batch.req_pool_indices)
+        else:
+            # Compatibility for the standalone mixin unit tests from PR #15645.
+            self.num_generated_tokens += len(batch.req_pool_indices)
+
+    def _report_beam_search_decode_stats(self, batch, result):
+        if hasattr(self, "metrics_reporter"):
+            self.metrics_reporter.forward_ct_decode = (
+                self.metrics_reporter.forward_ct_decode + 1
+            ) % (1 << 30)
+            self.metrics_reporter.report_decode_stats(
+                result.can_run_cuda_graph,
+                running_batch=batch,
+            )
+        else:
+            # Compatibility for the standalone mixin unit tests from PR #15645.
+            self.forward_ct_decode = (self.forward_ct_decode + 1) % (1 << 30)
+            if (
+                self.current_scheduler_metrics_enabled
+                and self.forward_ct_decode % self.server_args.decode_log_interval == 0
+            ):
+                self.log_decode_stats(result.can_run_cuda_graph, running_batch=batch)
+
     def process_beam_search_prefill_result(
         self: Scheduler, batch: ScheduleBatch, logits_output
     ) -> None:
@@ -88,7 +120,7 @@ class SchedulerBeamSearchProcessorMixin:
             elif not batch.decoding_reqs or req not in batch.decoding_reqs:
                 self.tree_cache.cache_unfinished_req(req)
 
-        self.stream_output(batch.reqs, batch.return_logprob, None)
+        self._stream_beam_search_output(batch.reqs, batch.return_logprob, None)
 
     def process_beam_search_decode_result(
         self: Scheduler, batch: ScheduleBatch, result: GenerationBatchResult
@@ -111,7 +143,7 @@ class SchedulerBeamSearchProcessorMixin:
         Note:
             beam search does not support grammar
         """
-        self.num_generated_tokens += len(batch.req_pool_indices)
+        self._increment_beam_search_generated_tokens(batch)
 
         beam_output_top_tokens, beam_output_top_logprobs = self._extract_beam_topk_data(
             batch, result
@@ -155,7 +187,7 @@ class SchedulerBeamSearchProcessorMixin:
                 req.beam_list.completed = completed[: req.beam_width]
                 req.beam_list.incomplete = []
 
-        self.stream_output(batch.reqs, batch.return_logprob)
+        self._stream_beam_search_output(batch.reqs, batch.return_logprob)
 
         self.token_to_kv_pool_allocator.free_group_begin()
         if any([req.finished() for req in batch.reqs]):
@@ -166,12 +198,8 @@ class SchedulerBeamSearchProcessorMixin:
             )
         self.token_to_kv_pool_allocator.free_group_end()
 
-        self.forward_ct_decode = (self.forward_ct_decode + 1) % (1 << 30)
-        if (
-            self.current_scheduler_metrics_enabled
-            and self.forward_ct_decode % self.server_args.decode_log_interval == 0
-        ):
-            self.log_decode_stats(result.can_run_cuda_graph, running_batch=batch)
+        self._report_beam_search_decode_stats(batch, result)
+
 
     @staticmethod
     def sum_beam_completion_tokens(req: Req) -> int:

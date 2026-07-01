@@ -2637,17 +2637,40 @@ class ServerArgs:
     def _handle_beam_search(self):
         """Normalize experimental beam-search settings.
 
-        PR #15645 adds the flag and downstream code checks it in multiple places.  Keep
-        the handler conservative on the v0.5.14 rebase path so non-beam-search serving
-        remains unchanged, while still making ServerArgs construction safe.
+        Beam search has its own request expansion and KV-cache remapping path.
+        Keep PR #15645's conservative compatibility policy so enabling beam search
+        selects the tested non-overlap, non-chunked, non-PP, non-disagg mode.
         """
         if not self.enable_beam_search:
             return
 
-        # Beam search uses its own request expansion path and is incompatible with
-        # these scheduling optimizations in the feature branch.
-        self.disable_overlap_schedule = True
-        self.chunked_prefill_size = -1
+        modified = []
+
+        if self.disaggregation_mode != "null":
+            self.disaggregation_mode = "null"
+            modified.append("PD separation")
+
+        if self.pp_size != 1:
+            self.pp_size = 1
+            modified.append("pipeline parallelism")
+
+        if not self.disable_overlap_schedule:
+            self.disable_overlap_schedule = True
+            modified.append("overlap schedule")
+
+        if self.chunked_prefill_size != -1:
+            self.chunked_prefill_size = -1
+            modified.append("chunked prefill")
+
+        if self.page_size != 1:
+            self.page_size = 1
+            modified.append("page_size (forced to 1)")
+
+        if modified:
+            logger.warning(
+                "Beam search enabled. Automatically disabled incompatible features: "
+                + ", ".join(modified)
+            )
 
     def _handle_load_balance_method(self):
         if self.disaggregation_mode not in ("null", "prefill", "decode"):
