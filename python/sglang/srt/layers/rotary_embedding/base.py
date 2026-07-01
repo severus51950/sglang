@@ -371,6 +371,15 @@ class RotaryEmbedding(MultiPlatformOp):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         if not self.use_fallback_kernel:
             batch_size = positions.size(0)
+            # Beam-search filtering can route transient eager batches whose
+            # Q/K tensors are non-contiguous views. The fused RoPE kernel updates
+            # the tensor in place, so make an explicit contiguous copy rather
+            # than using reshape (which could silently copy and still return the
+            # original unrotated tensor below).
+            if not query.is_contiguous():
+                query = query.contiguous()
+            if not key.is_contiguous():
+                key = key.contiguous()
             q_rope = query.view(batch_size, -1, self.head_size)
             k_rope = key.view(batch_size, -1, self.head_size)
             if self.head_size != self.rotary_dim:

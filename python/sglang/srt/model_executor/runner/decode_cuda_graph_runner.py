@@ -407,30 +407,60 @@ class DecodeCudaGraphRunner(BaseCudaGraphRunner):
         to copy a beam-expanded source (e.g. 95 rows) into a logical-request
         destination slice (e.g. 19 rows).
         """
-        if forward_batch.req_pool_indices is not None:
-            physical_bs = len(forward_batch.req_pool_indices)
-            if forward_batch.is_beam_search:
-                return physical_bs
-            # Some beam-search decode batches can reach the graph runner after
-            # logical request filtering with ``ForwardBatch.is_beam_search`` not
-            # set, while their bs-axis tensors are still beam-expanded. Detect
-            # the physical-row layout from tensor shapes so the graph path stays
-            # aligned with eager decode.
-            if (
-                forward_batch.forward_mode.is_decode()
-                and physical_bs > forward_batch.batch_size
-                and forward_batch.input_ids is not None
-                and forward_batch.input_ids.numel()
-                == physical_bs * self.num_tokens_per_bs
+        if forward_batch.forward_mode.is_decode():
+            # Beam-search filtering can temporarily leave ``batch_size`` as the
+            # logical request count while bs-axis tensors are still beam-expanded.
+            # Infer the raw graph bs from bs-axis tensors only; token-axis tensors
+            # can transiently carry beam-candidate scratch shapes, and those
+            # inconsistent steps must fall back to eager decode in can_run_graph().
+            candidates = [forward_batch.batch_size]
+            for name in (
+                "req_pool_indices",
+                "seq_lens",
+                "seq_lens_cpu",
+                "encoder_lens",
+                "mamba_track_indices",
+                "mamba_track_mask",
             ):
+                value = getattr(forward_batch, name, None)
+                if value is not None:
+                    candidates.append(len(value))
+
+            physical_bs = max(candidates)
+            if forward_batch.is_beam_search or physical_bs > forward_batch.batch_size:
                 return physical_bs
         return forward_batch.batch_size
+
+    def _has_cuda_graph_shape_mismatch(
+        self, forward_batch: ForwardBatch, raw_bs: int
+    ) -> bool:
+        if not forward_batch.forward_mode.is_decode():
+            return False
+        raw_num_token = raw_bs * self.num_tokens_per_bs
+        for name in ("input_ids", "positions", "out_cache_loc"):
+            value = getattr(forward_batch, name, None)
+            if value is not None and value.numel() != raw_num_token:
+                return True
+        for name in (
+            "req_pool_indices",
+            "seq_lens",
+            "seq_lens_cpu",
+            "encoder_lens",
+            "mamba_track_indices",
+            "mamba_track_mask",
+        ):
+            value = getattr(forward_batch, name, None)
+            if value is not None and len(value) != raw_bs:
+                return True
+        return False
 
     def can_run_graph(self, forward_batch: ForwardBatch):
         # Disable for token embedding overrides (dynamic per-request)
         if forward_batch.replace_embeds is not None:
             return False
         raw_bs = self._get_cuda_graph_raw_bs(forward_batch)
+        if self._has_cuda_graph_shape_mismatch(forward_batch, raw_bs):
+            return False
         if self.require_mlp_tp_gather:
             cuda_graph_bs = (
                 max(forward_batch.global_num_tokens_cpu) // self.num_tokens_per_bs

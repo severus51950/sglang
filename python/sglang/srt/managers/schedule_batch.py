@@ -2698,6 +2698,12 @@ class ScheduleBatch(ScheduleBatchDisaggregationDecodeMixin, ScheduleBatchBeamSea
         chunked_req_to_exclude: Optional[Union[Req, List[Req]]] = None,
         keep_indices: Optional[List[int]] = None,
     ):
+        if self.reqs and self.reqs[0].is_beam_search:
+            return self.filter_beam_search_batch(
+                chunked_req_to_exclude=chunked_req_to_exclude,
+                keep_indices=keep_indices,
+            )
+
         if keep_indices is None:
             if isinstance(chunked_req_to_exclude, Req):
                 chunked_req_to_exclude = [chunked_req_to_exclude]

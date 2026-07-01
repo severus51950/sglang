@@ -160,6 +160,62 @@ class EagerRunner(BaseRunner):
         # EagerRunner) and must not route an eager batch into a replay branch.
         return False
 
+    def _get_decode_raw_bs(self, forward_batch: ForwardBatch) -> int:
+        """Infer the physical decode batch size for eager static buffers.
+
+        Beam search expands one logical request into ``beam_width`` physical
+        decode rows. After beam filtering, ``ForwardBatch.batch_size`` can be
+        the filtered logical request count while bs-axis tensors still carry the
+        physical beam-expanded shape. The eager runner shares the same static
+        input-buffer registry as cuda graph, so use the physical bs here too.
+        """
+        if not forward_batch.forward_mode.is_decode():
+            return forward_batch.batch_size
+
+        candidates = [forward_batch.batch_size]
+        for name in (
+            "req_pool_indices",
+            "seq_lens",
+            "seq_lens_cpu",
+            "encoder_lens",
+            "mamba_track_indices",
+            "mamba_track_mask",
+        ):
+            value = getattr(forward_batch, name, None)
+            if value is not None:
+                candidates.append(len(value))
+        return max(candidates)
+
+    def _has_decode_shape_mismatch(
+        self, forward_batch: ForwardBatch, raw_bs: int, raw_num_tokens: int
+    ) -> bool:
+        """Return True when the live beam-search batch is transiently ragged.
+
+        Such transient states are valid for the live eager path but cannot be
+        mirrored into fixed-size static buffers because the registry copies each
+        slot with one bs/tokens length. Skip the static copy rather than trying
+        to coerce unrelated beam-candidate scratch tensors into the buffers.
+        """
+        if not forward_batch.forward_mode.is_decode():
+            return False
+
+        for name in ("input_ids", "positions", "out_cache_loc"):
+            value = getattr(forward_batch, name, None)
+            if value is not None and value.numel() != raw_num_tokens:
+                return True
+        for name in (
+            "req_pool_indices",
+            "seq_lens",
+            "seq_lens_cpu",
+            "encoder_lens",
+            "mamba_track_indices",
+            "mamba_track_mask",
+        ):
+            value = getattr(forward_batch, name, None)
+            if value is not None and len(value) != raw_bs:
+                return True
+        return False
+
     def load_batch(
         self, forward_batch: ForwardBatch, pp_proxy_tensors=None, **kwargs
     ) -> ForwardBatch:
@@ -168,8 +224,10 @@ class EagerRunner(BaseRunner):
         load_batch."""
         if envs.SGLANG_EAGER_INPUT_NO_COPY.get():
             return replace(forward_batch)
-        raw_bs = forward_batch.batch_size
+        raw_bs = self._get_decode_raw_bs(forward_batch)
         raw_num_tokens = forward_batch.input_ids.shape[0]
+        if self._has_decode_shape_mismatch(forward_batch, raw_bs, raw_num_tokens):
+            return replace(forward_batch)
         registry = self._eager_registry
         registry.fill_from(
             forward_batch,

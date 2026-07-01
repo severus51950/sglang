@@ -134,10 +134,31 @@ class ScheduleBatchBeamSearchMixin:
                 ].item()
 
         self.req_pool_indices = self.req_pool_indices[keep_pool_indices]
+        # The CPU mirror can be stale when beam search has expanded GPU-side
+        # request slots from logical requests to physical beam rows. Rebuild it
+        # from the filtered GPU tensor instead of indexing the stale logical
+        # mirror with physical beam indices.
+        self.req_pool_indices_cpu = self.req_pool_indices.cpu()
         self.seq_lens = self.seq_lens[keep_pool_indices]
         self.seq_lens_cpu = self.seq_lens.cpu()
         self.seq_lens_sum = self.seq_lens.sum().item()
         self.orig_seq_lens = self.orig_seq_lens[keep_pool_indices]
+
+        # Keep token-axis tensors in the same beam-expanded physical layout as
+        # req_pool_indices/seq_lens. Without this, generic filter_batch() would
+        # keep only logical request rows; the next decode step then builds K/V
+        # for num_requests * beam_width tokens but writes KV with only
+        # num_requests cache locations.
+        if self.input_ids is not None and len(self.input_ids) == len(
+            old_pool_indices_for_debug
+        ):
+            self.input_ids = self.input_ids[keep_pool_indices]
+        if self.out_cache_loc is not None and len(self.out_cache_loc) == len(
+            old_pool_indices_for_debug
+        ):
+            self.out_cache_loc = self.out_cache_loc[keep_pool_indices]
+        else:
+            self.out_cache_loc = None
 
         self.has_stream = any(req.stream for req in self.reqs)
         self.has_grammar = any(req.grammar for req in self.reqs)
@@ -236,6 +257,7 @@ class ScheduleBatchBeamSearchMixin:
         self.req_pool_indices = torch.cat(
             [self.req_pool_indices[:skip_idx], new_req_pool_indices]
         )
+        self.req_pool_indices_cpu = self.req_pool_indices.cpu()
 
         new_seq_lens = torch.cat(new_seq_lens_list)
         self.seq_lens = torch.cat([self.seq_lens[:skip_idx], new_seq_lens])
