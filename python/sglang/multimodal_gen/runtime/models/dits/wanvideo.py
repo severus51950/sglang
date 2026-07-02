@@ -49,9 +49,6 @@ from sglang.multimodal_gen.runtime.layers.visual_embedding import (
     TimestepEmbedder,
 )
 from sglang.multimodal_gen.runtime.managers.forward_context import get_forward_context
-from sglang.multimodal_gen.runtime.managers.memory_managers.layerwise_offload import (
-    LayerwiseOffloadableModuleMixin,
-)
 from sglang.multimodal_gen.runtime.models.dits.base import CachableDiT
 from sglang.multimodal_gen.runtime.models.utils import (
     _use_aiter,
@@ -61,6 +58,7 @@ from sglang.multimodal_gen.runtime.platforms import (
     current_platform,
 )
 from sglang.multimodal_gen.runtime.server_args import get_global_server_args
+from sglang.multimodal_gen.runtime.utils.layerwise_offload import OffloadableDiTMixin
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
 from sglang.srt.utils import add_prefix
 
@@ -72,6 +70,7 @@ if _use_aiter:
 
 
 class WanImageEmbedding(torch.nn.Module):
+
     def __init__(self, in_features: int, out_features: int):
         super().__init__()
 
@@ -88,6 +87,7 @@ class WanImageEmbedding(torch.nn.Module):
 
 
 class WanTimeTextImageEmbedding(nn.Module):
+
     def __init__(
         self,
         dim: int,
@@ -130,6 +130,7 @@ class WanTimeTextImageEmbedding(nn.Module):
 
 
 class WanSelfAttention(nn.Module):
+
     def __init__(
         self,
         dim: int,
@@ -181,7 +182,7 @@ class WanSelfAttention(nn.Module):
             dim,
             input_is_parallel=True,
             quant_config=quant_config,
-            prefix=add_prefix("to_out", prefix),
+            prefix=add_prefix("to_out.0", prefix),
         )
         self.norm_q = RMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
         self.norm_k = RMSNorm(dim, eps=eps) if qk_norm else nn.Identity()
@@ -246,6 +247,7 @@ class WanT2VCrossAttention(WanSelfAttention):
 
 
 class WanI2VCrossAttention(WanSelfAttention):
+
     def __init__(
         self,
         dim: int,
@@ -333,6 +335,7 @@ class WanI2VCrossAttention(WanSelfAttention):
 
 
 class WanTransformerBlock(nn.Module):
+
     def __init__(
         self,
         dim: int,
@@ -363,7 +366,7 @@ class WanTransformerBlock(nn.Module):
             bias=True,
             gather_output=False,
             quant_config=quant_config,
-            prefix=add_prefix("to_q", prefix),
+            prefix=add_prefix("attn1.to_q", prefix),
         )
         self.to_k = ColumnParallelLinear(
             dim,
@@ -371,7 +374,7 @@ class WanTransformerBlock(nn.Module):
             bias=True,
             gather_output=False,
             quant_config=quant_config,
-            prefix=add_prefix("to_k", prefix),
+            prefix=add_prefix("attn1.to_k", prefix),
         )
         self.to_v = ColumnParallelLinear(
             dim,
@@ -379,7 +382,7 @@ class WanTransformerBlock(nn.Module):
             bias=True,
             gather_output=False,
             quant_config=quant_config,
-            prefix=add_prefix("to_v", prefix),
+            prefix=add_prefix("attn1.to_v", prefix),
         )
 
         self.to_out = RowParallelLinear(
@@ -388,7 +391,7 @@ class WanTransformerBlock(nn.Module):
             bias=True,
             reduce_results=True,
             quant_config=quant_config,
-            prefix=add_prefix("to_out", prefix),
+            prefix=add_prefix("attn1.to_out.0", prefix),
         )
         tp_size = get_tp_world_size()
         self.local_num_heads = divide(num_heads, tp_size)
@@ -478,7 +481,7 @@ class WanTransformerBlock(nn.Module):
             dim,
             ffn_dim,
             act_type="gelu_pytorch_tanh",
-            prefix=add_prefix("ffn", prefix),
+            prefix=add_prefix("ffn.net", prefix),
             quant_config=quant_config,
         )
         self.mlp_residual = MulAdd()
@@ -511,14 +514,9 @@ class WanTransformerBlock(nn.Module):
         else:
             # temb: batch_size, 6, inner_dim (wan2.1/wan2.2 14B)
             e = self.scale_shift_table + temb.float()
-            (
-                shift_msa,
-                scale_msa,
-                gate_msa,
-                c_shift_msa,
-                c_scale_msa,
-                c_gate_msa,
-            ) = e.chunk(6, dim=1)
+            shift_msa, scale_msa, gate_msa, c_shift_msa, c_scale_msa, c_gate_msa = (
+                e.chunk(6, dim=1)
+            )
 
         assert shift_msa.dtype == torch.float32
 
@@ -613,6 +611,7 @@ class WanTransformerBlock(nn.Module):
 
 
 class WanTransformerBlock_VSA(nn.Module):
+
     def __init__(
         self,
         dim: int,
@@ -624,8 +623,6 @@ class WanTransformerBlock_VSA(nn.Module):
         added_kv_proj_dim: int | None = None,
         supported_attention_backends: set[AttentionBackendEnum] | None = None,
         prefix: str = "",
-        attention_type: str = "original",
-        sla_topk: float = 0.0,
         quant_config: QuantizationConfig | None = None,
     ):
         super().__init__()
@@ -643,7 +640,7 @@ class WanTransformerBlock_VSA(nn.Module):
             bias=True,
             gather_output=True,
             quant_config=quant_config,
-            prefix=add_prefix("to_q", prefix),
+            prefix=add_prefix("attn1.to_q", prefix),
         )
         self.to_k = ColumnParallelLinear(
             dim,
@@ -651,7 +648,7 @@ class WanTransformerBlock_VSA(nn.Module):
             bias=True,
             gather_output=True,
             quant_config=quant_config,
-            prefix=add_prefix("to_k", prefix),
+            prefix=add_prefix("attn1.to_k", prefix),
         )
         self.to_v = ColumnParallelLinear(
             dim,
@@ -659,7 +656,7 @@ class WanTransformerBlock_VSA(nn.Module):
             bias=True,
             gather_output=True,
             quant_config=quant_config,
-            prefix=add_prefix("to_v", prefix),
+            prefix=add_prefix("attn1.to_v", prefix),
         )
         self.to_gate_compress = ColumnParallelLinear(
             dim,
@@ -676,7 +673,7 @@ class WanTransformerBlock_VSA(nn.Module):
             bias=True,
             gather_output=True,
             quant_config=quant_config,
-            prefix=add_prefix("to_out", prefix),
+            prefix=add_prefix("attn1.to_out.0", prefix),
         )
         self.attn1 = UlyssesAttention_VSA(
             num_heads=num_heads,
@@ -745,7 +742,7 @@ class WanTransformerBlock_VSA(nn.Module):
             dim,
             ffn_dim,
             act_type="gelu_pytorch_tanh",
-            prefix=add_prefix("ffn", prefix),
+            prefix=add_prefix("ffn.net", prefix),
             quant_config=quant_config,
         )
         self.mlp_residual = MulAdd()
@@ -858,7 +855,7 @@ class WanTransformerBlock_VSA(nn.Module):
         return hidden_states
 
 
-class WanTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
+class WanTransformer3DModel(CachableDiT, OffloadableDiTMixin):
     _fsdp_shard_conditions = WanVideoConfig()._fsdp_shard_conditions
     _compile_conditions = WanVideoConfig()._compile_conditions
     _supported_attention_backends = WanVideoConfig()._supported_attention_backends
@@ -1052,7 +1049,7 @@ class WanTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
             )
 
         hidden_states = self.patch_embedding(hidden_states)
-        hidden_states = hidden_states.flatten(2).transpose(1, 2).contiguous()
+        hidden_states = hidden_states.flatten(2).transpose(1, 2)
 
         # shape is [B, T' * H' * W', C]
         seq_len_orig = hidden_states.shape[1]
@@ -1091,16 +1088,13 @@ class WanTransformer3DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
         else:
             ts_seq_len = None
 
-        (
-            temb,
-            timestep_proj,
-            encoder_hidden_states,
-            encoder_hidden_states_image,
-        ) = self.condition_embedder(
-            timestep,
-            encoder_hidden_states,
-            encoder_hidden_states_image,
-            timestep_seq_len=ts_seq_len,
+        temb, timestep_proj, encoder_hidden_states, encoder_hidden_states_image = (
+            self.condition_embedder(
+                timestep,
+                encoder_hidden_states,
+                encoder_hidden_states_image,
+                timestep_seq_len=ts_seq_len,
+            )
         )
         if ts_seq_len is not None:
             # batch_size, seq_len, 6, inner_dim

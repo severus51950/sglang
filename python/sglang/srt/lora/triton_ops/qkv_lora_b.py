@@ -145,13 +145,12 @@ def qkv_lora_b_fwd(
     output_offset: torch.Tensor,
     max_qkv_out_dim: int,
     base_output: torch.Tensor = None,
-    n_slices: int = 3,
 ) -> torch.Tensor:
 
-    # x: (s, n_slices * r)
+    # x: (s, 3 * r)
     # qkv_lora_b: (num_lora, output_dim_q + 2 * output_dim_kv, r)
     # output_offset = [0, output_dim_q, output_dim_q + output_dim_kv,
-    #                     output_dim_q + 2 * output_dim_kv]  (length n_slices + 1)
+    #                     output_dim_q + 2 * output_dim_kv]
     # max_qkv_out_dim = max(output_dim_q, output_dim_kv)
     # output: (s, output_dim_q + 2 * output_dim_kv)
 
@@ -167,8 +166,8 @@ def qkv_lora_b_fwd(
     input_dim = x.shape[1]
     r = qkv_lora_b.shape[-1]
     output_dim = qkv_lora_b.shape[-2]
-    assert input_dim == n_slices * r
-    assert output_offset.shape[0] == n_slices + 1
+    assert input_dim == 3 * r
+    assert output_offset.shape[0] == 4
 
     BLOCK_S = 16
     BLOCK_R = 16
@@ -177,7 +176,7 @@ def qkv_lora_b_fwd(
     grid_b = (
         triton.cdiv(batch_info.max_len, BLOCK_S)
         * triton.cdiv(max_qkv_out_dim, BLOCK_OUT),
-        n_slices,
+        3,  # this dimension decides current block computes on q, k or v
         batch_info.bs,
     )
 

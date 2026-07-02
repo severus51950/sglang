@@ -1,7 +1,7 @@
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Callable, Deque, Dict, List, Optional
+from typing import Callable, Deque, Dict, Optional
 
 import torch
 
@@ -9,10 +9,7 @@ import torch
 class DeviceTimer:
     def __init__(self, reporter: Callable):
         self._intervals: Deque[_TimingInterval] = deque()
-        self._reporters: List[Callable] = [reporter]
-
-    def add_reporter(self, reporter: Callable):
-        self._reporters.append(reporter)
+        self._reporter = reporter
 
     @contextmanager
     def wrap(self, metadata: Dict):
@@ -30,9 +27,7 @@ class DeviceTimer:
                 break
 
             self._intervals.popleft()
-            elapsed = interval.elapsed_time() / 1000.0
-            for reporter in self._reporters:
-                reporter(t=elapsed, **interval.metadata)
+            self._reporter(t=interval.elapsed_time() / 1000.0, **interval.metadata)
 
 
 class GapTimer(DeviceTimer):

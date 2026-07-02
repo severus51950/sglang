@@ -46,8 +46,6 @@ def _is_supported_rmsnorm_hidden_size(d: int) -> bool:
 def _rmsnorm_kernel_class(hidden_size: int) -> str:
     if hidden_size in _RMSNORM_WARP_SIZES:
         return "RMSNormWarpKernel"
-    if hidden_size == 512:
-        return "RMSNormHalfKernel"
     if hidden_size >= _RMSNORM_HALF_BLOCK_MIN_SIZE:
         if hidden_size % 512 == 0:
             return "RMSNormHalfKernel"
@@ -66,15 +64,9 @@ def _jit_rmsnorm_module(hidden_size: int, dtype: torch.dtype) -> Module:
     )
 
 
-def is_supported_jit_fused_add_rmsnorm_hidden_size(hidden_size: int) -> bool:
-    return hidden_size > 0 and hidden_size % 16 == 0 and hidden_size <= 8192
-
-
 @cache_once
-def _jit_fused_add_rmsnorm_module(
-    dtype: torch.dtype, cast_x_before_out_mul: bool
-) -> Module:
-    args = make_cpp_args(cast_x_before_out_mul, dtype)
+def _jit_fused_add_rmsnorm_module(dtype: torch.dtype) -> Module:
+    args = make_cpp_args(dtype)
     return load_jit(
         "fused_add_rmsnorm",
         *args,
@@ -150,10 +142,8 @@ def fused_add_rmsnorm(
     residual: torch.Tensor,
     weight: torch.Tensor,
     eps: float = 1e-6,
-    *,
-    cast_x_before_out_mul: bool = False,
 ) -> None:
-    module = _jit_fused_add_rmsnorm_module(input.dtype, cast_x_before_out_mul)
+    module = _jit_fused_add_rmsnorm_module(input.dtype)
     module.fused_add_rmsnorm(input, residual, weight, eps)
 
 

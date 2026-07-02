@@ -6,7 +6,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-from sglang.benchmark.serving import run_benchmark
+from sglang.bench_serving import run_benchmark
 from sglang.benchmark.utils import parse_custom_headers
 from sglang.srt.constants import HEALTH_CHECK_RID_PREFIX
 from sglang.srt.utils import kill_process_tree
@@ -74,13 +74,9 @@ class TestBenchServingFunctionality(CustomTestCase):
     def _verify_multi_turn_logs(self, content: str):
         reqs = []
         for line in content.splitlines():
-            idx = line.find("{")
-            if idx == -1:
+            if not line.startswith("{"):
                 continue
-            try:
-                obj = json.loads(line[idx:])
-            except json.JSONDecodeError:
-                continue
+            obj = json.loads(line)
             if obj.get("event") != "request.finished":
                 continue
             text = obj.get("obj", {}).get("text")

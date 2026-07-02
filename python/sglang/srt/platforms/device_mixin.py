@@ -26,13 +26,10 @@ Method status annotations:
 """
 
 import enum
-import random
-from typing import NamedTuple, Optional
+from typing import TYPE_CHECKING, NamedTuple, Optional
 
-import numpy as np
-import torch
-
-from sglang.srt.environ import envs
+if TYPE_CHECKING:
+    import torch
 
 
 class PlatformEnum(enum.Enum):
@@ -79,16 +76,6 @@ class DeviceCapability(NamedTuple):
         """Express capability as ``<major><minor>`` (minor is single digit)."""
         assert 0 <= self.minor < 10
         return self.major * 10 + self.minor
-
-
-_DEVICE_TO_DISTRIBUTED_BACKEND: dict[str, str] = {
-    "cuda": "nccl",
-    "xpu": "xccl",
-    "hpu": "hccl",
-    "cpu": "gloo",
-    "npu": "hccl" if not envs.SGLANG_ZBAL_LOCAL_MEM_SIZE.get() > 0 else "zbal",
-    "musa": "mccl",
-}
 
 
 class DeviceMixin:
@@ -167,8 +154,8 @@ class DeviceMixin:
 
     # ---- Device management ----
 
-    def get_device(self, device_id: int = 0) -> str:
-        """[Planned] Return ``torch.device`` for the given device id."""
+    def get_device(self, local_rank: int) -> "torch.device":
+        """[Planned] Return ``torch.device`` for the given local rank."""
         raise NotImplementedError
 
     def set_device(self, device: "torch.device") -> None:
@@ -204,13 +191,8 @@ class DeviceMixin:
     # ---- Distributed ----
 
     def get_torch_distributed_backend_str(self) -> str:
-        """Return the torch.distributed backend string (e.g. "nccl", "hccl").
-
-        Default: lookup ``self.device_type`` in ``_DEVICE_TO_DISTRIBUTED_BACKEND``,
-        falling back to ``"gloo"``. Subclasses override only when they need a
-        non-default backend (e.g. mooncake, or a brand-new device).
-        """
-        return _DEVICE_TO_DISTRIBUTED_BACKEND.get(self.device_type, "gloo")
+        """[Planned] Return the torch.distributed backend string (e.g. "nccl", "hccl")."""
+        raise NotImplementedError
 
     def get_communicator_class(self) -> type | None:
         """[Planned] Return platform-specific communicator class, or None for default."""
@@ -221,12 +203,19 @@ class DeviceMixin:
     @classmethod
     def inference_mode(cls):
         """[Planned] Return inference mode context manager."""
+        import torch
+
         return torch.inference_mode(mode=True)
 
     @classmethod
     def seed_everything(cls, seed: int | None = None) -> None:
         """[Planned] Set random seeds for reproducibility across all libraries."""
         if seed is not None:
+            import random
+
+            import numpy as np
+            import torch
+
             random.seed(seed)
             np.random.seed(seed)
             torch.manual_seed(seed)

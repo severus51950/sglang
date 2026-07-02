@@ -16,12 +16,10 @@ from sglang.srt.layers.utils.logprob import get_token_ids_logprobs, get_top_logp
 from sglang.srt.sampling.sampling_batch_info import SamplingBatchInfo
 from sglang.srt.sampling.sampling_params import TOP_K_ALL
 from sglang.srt.server_args import get_global_server_args
-from sglang.srt.utils.async_probe import sanitize_nan_logits
 from sglang.srt.utils.common import (
+    crash_on_warnings,
     get_bool_env_var,
     is_cuda,
-    is_hip,
-    is_musa,
     is_npu,
 )
 
@@ -34,25 +32,6 @@ if is_cuda():
         top_k_renorm_prob,
         top_p_renorm_prob,
     )
-
-if is_musa():
-    from sgl_kernel import (
-        min_p_sampling_from_probs,
-        top_k_renorm_prob,
-        top_k_top_p_sampling_from_probs,
-        top_p_renorm_prob,
-    )
-
-_use_aiter = get_bool_env_var("SGLANG_USE_AITER") and is_hip()
-if _use_aiter:
-    from aiter import greedy_sample as _aiter_greedy_sample
-
-# The aiter greedy_sample kernel can return an out-of-range token id (== vocab_size,
-# e.g. 151666 for MiniCPM-V) for all-NaN / all -inf logit rows on ROCm, which decodes
-# to an empty string and breaks downstream consumers. Set this to 1 to fall back to
-# torch.argmax (which always returns a valid index). Default off so behavior is
-# unchanged elsewhere.
-_disable_aiter_greedy_sample = get_bool_env_var("SGLANG_DISABLE_AITER_GREEDY_SAMPLE")
 
 if is_npu():
     import torch_npu
@@ -68,6 +47,7 @@ _BUILT_IN_SAMPLING_BACKENDS = {"flashinfer", "pytorch", "ascend"}
 class Sampler(nn.Module):
     def __init__(self):
         super().__init__()
+        self.use_nan_detection = get_global_server_args().enable_nan_detection
         self.tp_sync_group = get_tp_group().device_group
         if is_dp_attention_enabled():
             self.tp_sync_group = get_attention_tp_group().device_group
@@ -84,10 +64,20 @@ class Sampler(nn.Module):
     def _preprocess_logits(
         self, logits: torch.Tensor, sampling_info: SamplingBatchInfo
     ) -> torch.Tensor:
-        """Apply custom logit processors and sanitize non-finite logits."""
+        """Apply custom logit processors and handle NaN detection."""
+        # Apply the custom logit processors if registered in the sampling info
         if sampling_info.has_custom_logit_processor:
             apply_custom_logit_processor(logits, sampling_info)
-        sanitize_nan_logits(logits, "sampler: next_token_logits")
+
+        # Detect and handle NaN values in logits
+        if self.use_nan_detection and torch.any(torch.isnan(logits)):
+            logger.warning("Detected errors during sampling! NaN in the logits.")
+            logits = torch.where(
+                torch.isnan(logits), torch.full_like(logits, -1e5), logits
+            )
+            if crash_on_warnings():
+                raise ValueError("Detected errors during sampling! NaN in the logits.")
+
         return logits
 
     def forward(
@@ -98,6 +88,7 @@ class Sampler(nn.Module):
         top_logprobs_nums: List[int],
         token_ids_logprobs: List[List[int]],
         positions: torch.Tensor,
+        is_beam_search: bool,
     ):
         """Run a sampler & compute logprobs and update logits_output accordingly.
 
@@ -115,17 +106,18 @@ class Sampler(nn.Module):
         """
         logits = logits_output.next_token_logits
 
+        if is_beam_search:
+            # For beam search, only compute logprobs here. Sampling is handled externally.
+            logprobs = torch.nn.functional.log_softmax(logits, dim=-1)
+            logits_output.logprobs = logprobs
+            return None
+
         # Preprocess logits (custom processors and NaN handling)
         logits = self._preprocess_logits(logits, sampling_info)
 
         if sampling_info.is_all_greedy:
-            if _use_aiter and not _disable_aiter_greedy_sample:
-                batch_next_token_ids = torch.empty(
-                    logits.shape[0], device=logits.device, dtype=torch.int32
-                )
-                _aiter_greedy_sample(batch_next_token_ids, logits)
-            else:
-                batch_next_token_ids = torch.argmax(logits, -1)
+            # Use torch.argmax if all requests use greedy sampling
+            batch_next_token_ids = torch.argmax(logits, -1)
             if return_logprob:
                 original_logprobs = logprobs = torch.nn.functional.log_softmax(
                     logits, dim=-1
@@ -156,11 +148,7 @@ class Sampler(nn.Module):
             if self.use_ascend_backend:
                 # Ascend backend: sample from logits directly.
                 batch_next_token_ids, logprobs = self._forward_ascend_backend(
-                    logits,
-                    sampling_info,
-                    simple_sampling_case,
-                    return_logprob,
-                    positions,
+                    logits, sampling_info, simple_sampling_case, return_logprob
                 )
             elif (
                 self.use_log_softmax_logprob
@@ -247,6 +235,7 @@ class Sampler(nn.Module):
                         sampling_info.top_ks,
                         sampling_info.top_ps,
                         filter_apply_order="joint",
+                        check_nan=self.use_nan_detection,
                     )
             elif backend == "pytorch":
                 # A slower fallback implementation with torch native operations.
@@ -287,7 +276,6 @@ class Sampler(nn.Module):
         logits: torch.Tensor,
         sampling_info: SamplingBatchInfo,
         simple_sampling_case: bool,
-        positions: torch.Tensor,
     ) -> torch.Tensor:
         """Sample from temperature-scaled logits without softmax.
 
@@ -295,13 +283,7 @@ class Sampler(nn.Module):
         """
         if simple_sampling_case:
             probs = torch.softmax(logits, dim=-1)
-            if sampling_info.sampling_seed is not None:
-                probabilities = probs.to(torch.float64).log_()
-                batch_next_token_ids = multinomial_with_seed(
-                    probabilities, sampling_info.sampling_seed, positions
-                ).view(-1)
-            else:
-                batch_next_token_ids = torch.multinomial(probs, num_samples=1).view(-1)
+            batch_next_token_ids = torch.multinomial(probs, num_samples=1).view(-1)
             return batch_next_token_ids.to(torch.int32)
         else:
             assert (
@@ -313,8 +295,6 @@ class Sampler(nn.Module):
                 sampling_info.top_ps,
                 sampling_info.min_ps,
                 sampling_info.need_min_p_sampling,
-                sampling_info.sampling_seed,
-                positions,
             )
             return batch_next_token_ids.to(torch.int32)
 
@@ -324,7 +304,6 @@ class Sampler(nn.Module):
         sampling_info: SamplingBatchInfo,
         simple_sampling_case: bool,
         return_logprob: bool,
-        positions: torch.Tensor,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Handle the full Ascend backend sampling path.
 
@@ -337,7 +316,7 @@ class Sampler(nn.Module):
         """
         logits.div_(sampling_info.temperatures)
         batch_next_token_ids = self._sample_from_logits(
-            logits, sampling_info, simple_sampling_case, positions
+            logits, sampling_info, simple_sampling_case
         )
         logprobs = None
         if return_logprob and not SGLANG_RETURN_ORIGINAL_LOGPROB:
@@ -533,8 +512,6 @@ def top_k_top_p_min_p_sampling_from_logits_ascend(
     top_ps: torch.Tensor,
     min_ps: torch.Tensor,
     need_min_p_sampling: bool,
-    sampling_seed: Optional[torch.Tensor],
-    positions: torch.Tensor,
 ):
     """A top-k, top-p and min-p sampling implementation for ascend npu with torch_npu interface.
 
@@ -552,17 +529,7 @@ def top_k_top_p_min_p_sampling_from_logits_ascend(
             min_p_mask = probs_top_k_top_p < min_p_thresholds.view(-1, 1)
             probs_top_k_top_p.masked_fill_(min_p_mask, 0.0)
 
-        if sampling_seed is None:
-            batch_next_token_ids = torch.multinomial(probs_top_k_top_p, num_samples=1)
-        else:
-            logprobs_top_k_top_p = probs_top_k_top_p.to(
-                torch.float64
-            )  # Using float64 for numerical stability
-            del probs_top_k_top_p
-            logprobs_top_k_top_p.log_()
-            batch_next_token_ids = multinomial_with_seed(
-                logprobs_top_k_top_p, sampling_seed, positions
-            )
+        batch_next_token_ids = torch.multinomial(probs_top_k_top_p, num_samples=1)
     else:
         probs = torch.softmax(logits, dim=-1)
         probs_sort, probs_idx = probs.sort(dim=-1, descending=True)
@@ -584,22 +551,14 @@ def top_k_top_p_min_p_sampling_from_logits_ascend(
             min_p_mask = probs_sort < min_p_thresholds.view(-1, 1)
             probs_sort.masked_fill_(min_p_mask, 0.0)
 
-        if sampling_seed is None:
-            sampled_index = torch.multinomial(probs_sort, num_samples=1)
-        else:
-            logprobs = probs_sort.to(
-                torch.float64
-            )  # Using float64 for numerical stability
-            del probs_sort
-            logprobs.log_()
-            sampled_index = multinomial_with_seed(logprobs, sampling_seed, positions)
+        sampled_index = torch.multinomial(probs_sort, num_samples=1)
         probs_idx = probs_idx.to(torch.int32)
         batch_next_token_ids = torch.gather(probs_idx, dim=1, index=sampled_index)
 
     return batch_next_token_ids.view(-1)
 
 
-@torch.compile(dynamic=True, disable=is_npu())
+@torch.compile(dynamic=True)
 def multinomial_with_seed(
     logprobs: torch.Tensor, seed: torch.Tensor, positions: torch.Tensor
 ) -> torch.Tensor:

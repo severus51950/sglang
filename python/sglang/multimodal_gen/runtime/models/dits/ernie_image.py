@@ -33,10 +33,8 @@ from sglang.multimodal_gen.runtime.layers.linear import (
     RowParallelLinear,
 )
 from sglang.multimodal_gen.runtime.layers.quantization import QuantizationConfig
-from sglang.multimodal_gen.runtime.managers.memory_managers.layerwise_offload import (
-    LayerwiseOffloadableModuleMixin,
-)
 from sglang.multimodal_gen.runtime.models.dits.base import CachableDiT
+from sglang.multimodal_gen.runtime.utils.layerwise_offload import OffloadableDiTMixin
 
 
 def _rope(pos: torch.Tensor, dim: int, theta: int) -> torch.Tensor:
@@ -174,6 +172,7 @@ class ErnieImageSelfAttention(nn.Module):
 
 
 class ErnieImageMLP(nn.Module):
+
     def __init__(
         self,
         hidden_size: int,
@@ -267,7 +266,7 @@ def _apply_rotary_bshd(x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
     return torch.cat((x_rot, x_pass), dim=-1)
 
 
-class ErnieImageTransformer2DModel(CachableDiT, LayerwiseOffloadableModuleMixin):
+class ErnieImageTransformer2DModel(CachableDiT, OffloadableDiTMixin):
     """ErnieImage DiT: Single-stream transformer with Shared AdaLN."""
 
     _supports_gradient_checkpointing = True

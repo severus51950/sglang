@@ -29,7 +29,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING, AsyncGenerator, List, Optional, Union
 
-from fastapi import Request, WebSocket
+from fastapi import Request
 from fastapi.responses import ORJSONResponse, Response, StreamingResponse
 
 from sglang.srt.entrypoints.openai.protocol import (
@@ -42,14 +42,9 @@ from sglang.srt.entrypoints.openai.protocol import (
     TranscriptionUsage,
     TranscriptionVerboseResponse,
 )
-from sglang.srt.entrypoints.openai.realtime import (
-    handle_realtime_transcription,
-)
 from sglang.srt.entrypoints.openai.serving_base import OpenAIServingBase
 from sglang.srt.entrypoints.openai.streaming_asr import (
     StreamingASRState,
-    needs_space,
-    process_asr_chunk,
     split_audio_chunks,
 )
 from sglang.srt.entrypoints.openai.transcription_adapters import resolve_adapter
@@ -69,11 +64,6 @@ class OpenAIServingTranscription(OpenAIServingBase):
         model_config = tokenizer_manager.model_config
         self._adapter = resolve_adapter(
             getattr(model_config.hf_config, "architectures", [])
-        )
-        # Cap concurrent /v1/realtime sessions. The Semaphore is bound to the
-        # event loop on first acquire (uvicorn's loop in normal serving).
-        self._session_semaphore = asyncio.Semaphore(
-            tokenizer_manager.server_args.asr_max_concurrent_sessions
         )
 
     def _request_id_prefix(self) -> str:
@@ -200,7 +190,7 @@ class OpenAIServingTranscription(OpenAIServingBase):
 
         # For fused auto-detect, parse_fused_output returns the scrubbed
         # user-visible text. On parse failure (FSM abort, truncation) it
-        # returns (None, None) and we fall back to strip_special_tokens —
+        # returns (None, None) and we fall back to a best-effort scrub —
         # the language stays unset rather than reporting a bogus detection.
         if getattr(request, "_fused_autodetect", False):
             lang, visible = self._adapter.parse_fused_output(
@@ -385,14 +375,13 @@ class OpenAIServingTranscription(OpenAIServingBase):
         - Token-level streaming within chunks (stream=True)
         - Encoder window caching across chunks
         - Cross-chunk KV cache reuse
+        - WebSocket endpoint for real-time audio input
         """
         created_time = int(time.time())
         request_id = f"{self._request_id_prefix()}{uuid.uuid4().hex}"
         model = request.model
         state = StreamingASRState(**self._adapter.chunked_streaming_config)
-        # Track only the trailing char of the cumulative emit; `needs_space`
-        # uses prev[-1] / cur[0] so we don't need to keep the full buffer.
-        last_char = ""
+        first_word = True
 
         try:
             chunks = split_audio_chunks(request.audio_data, state.chunk_size_sec)
@@ -402,24 +391,49 @@ class OpenAIServingTranscription(OpenAIServingBase):
                     logger.info("[streaming_asr] client disconnected, stopping")
                     break
                 is_last = i == len(chunks) - 1
+                prompt = self._adapter.prompt_template + state.get_prefix_text()
 
-                delta = await process_asr_chunk(
-                    tokenizer_manager=self.tokenizer_manager,
-                    adapter=self._adapter,
-                    state=state,
+                chunk_request = GenerateReqInput(
+                    text=prompt,
                     audio_data=chunk_audio,
                     sampling_params=adapted_request.sampling_params,
-                    is_last=is_last,
-                    raw_request=raw_request,
+                    stream=False,
+                    modalities=["audio"],
                     routing_key=self.extract_routing_key(raw_request),
                 )
+
+                try:
+                    ret = None
+                    async for ret in self.tokenizer_manager.generate_request(
+                        chunk_request, raw_request
+                    ):
+                        break
+                except asyncio.CancelledError:
+                    raise
+                except ValueError as e:
+                    logger.warning(
+                        "[streaming_asr] chunk %d failed with ValueError: %s", i, e
+                    )
+                    continue
+
+                if ret is None:
+                    logger.warning("[streaming_asr] empty response for chunk %d", i)
+                    continue
+
+                text = self._adapter.postprocess_text(ret.get("text", ""))
+
+                if is_last:
+                    state.full_transcript = text
+                    delta = state.finalize()
+                else:
+                    delta = state.update(text)
 
                 if delta:
                     for word in delta.split(" "):
                         if not word:
                             continue
-                        content = f" {word}" if needs_space(last_char, word) else word
-                        last_char = content[-1]
+                        content = word if first_word else " " + word
+                        first_word = False
                         chunk_resp = TranscriptionStreamResponse(
                             id=request_id,
                             created=created_time,
@@ -455,12 +469,3 @@ class OpenAIServingTranscription(OpenAIServingBase):
             yield f"data: {error}\n\n"
 
         yield "data: [DONE]\n\n"
-
-    async def handle_websocket(self, websocket: WebSocket) -> None:
-        await handle_realtime_transcription(
-            websocket,
-            tokenizer_manager=self.tokenizer_manager,
-            adapter=self._adapter,
-            server_args=self.tokenizer_manager.server_args,
-            session_semaphore=self._session_semaphore,
-        )

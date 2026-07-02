@@ -14,7 +14,6 @@ This section covers the main performance levers for SGLang Diffusion: attention 
 ## Start Here
 
 - Use [Attention Backends](attention_backends.md) to choose the best backend for your model and hardware.
-- Use [Deployment Cookbook](deployment_cookbook.md) to choose CPU offload, FSDP, CFG parallelism, SP, and TP.
 - Use [Caching Acceleration](cache/index.md) to reduce denoising cost with Cache-DiT or TeaCache.
 - Use [Profiling](profiling.md) when you need to diagnose a bottleneck rather than guess.
 
@@ -27,7 +26,6 @@ This section covers the main performance levers for SGLang Diffusion: attention 
 :maxdepth: 1
 
 attention_backends
-deployment_cookbook
 cache/index
 profiling
 ```

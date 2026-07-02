@@ -2,12 +2,10 @@ export const LTXDeployment = () => {
   const options = {
     hardware: {
       name: 'hardware',
-      title: 'Deployment Target',
+      title: 'Hardware Platform',
       items: [
-        { id: 'h200', label: '1x H200', subtitle: 'resident', default: true },
-        { id: 'h200-2gpu', label: '2 GPUs', subtitle: 'CFG parallel', default: false },
-        { id: 'h200-4gpu', label: '4 GPUs', subtitle: 'TP2 + CFG', default: false },
-        { id: 'standard', label: 'Standard CUDA', subtitle: 'Original mode', default: false },
+        { id: 'h200', label: 'H200', subtitle: 'Fastest, resident', default: true },
+        { id: 'standard', label: 'Standard CUDA', subtitle: 'Snapshot mode', default: false },
         { id: 'official', label: 'Official Match', subtitle: 'Original switching', default: false },
       ],
     },
@@ -115,21 +113,13 @@ export const LTXDeployment = () => {
   };
 
   const getDeviceMode = () => {
-    if (values.hardware.startsWith('h200')) {
+    if (values.hardware === 'h200') {
       return 'resident';
     }
     if (values.hardware === 'official') {
       return 'original';
     }
-    return 'original';
-  };
-
-  const getParallelFlags = () => {
-    const parallelFlagsMap = {
-      'h200-2gpu': ` \\\n  --num-gpus 2 \\\n  --enable-cfg-parallel`,
-      'h200-4gpu': ` \\\n  --num-gpus 4 \\\n  --tp-size 2 \\\n  --enable-cfg-parallel`,
-    };
-    return parallelFlagsMap[values.hardware] || '';
+    return 'snapshot';
   };
 
   const generateCommand = () => {
@@ -140,8 +130,7 @@ export const LTXDeployment = () => {
     }
 
     let command = `sglang serve \\\n  --model-path ${config.repoId} \\\n  --pipeline-class-name ${pipelineClass}`;
-    command += getParallelFlags();
-    if (values.model === 'ltx23' && values.pipeline !== 'one-stage') {
+    if (values.pipeline !== 'one-stage') {
       command += ` \\\n  --ltx2-two-stage-device-mode ${getDeviceMode()}`;
     }
 

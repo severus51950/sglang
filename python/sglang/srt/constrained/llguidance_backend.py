@@ -51,6 +51,7 @@ class GuidanceGrammar(BaseGrammarObject):
         )
         self._check_err()
 
+        self.bitmask = None
         self.eos_token = self.llguidance_tokenizer.eos_token
 
     def accept_token(self, token: int):
@@ -82,7 +83,16 @@ class GuidanceGrammar(BaseGrammarObject):
     def allocate_vocab_mask(
         self, vocab_size: int, batch_size: int, device
     ) -> torch.Tensor:
-        return allocate_token_bitmask(batch_size, self.llguidance_tokenizer.vocab_size)
+        if self.bitmask is None or self.bitmask.shape[0] < batch_size:
+            # only create bitmask when batch gets larger
+            self.bitmask = allocate_token_bitmask(
+                batch_size, self.llguidance_tokenizer.vocab_size
+            )
+            bitmask = self.bitmask
+        else:
+            bitmask = self.bitmask[:batch_size]
+
+        return bitmask
 
     @staticmethod
     def move_vocab_mask(vocab_mask: torch.Tensor, device) -> torch.Tensor:

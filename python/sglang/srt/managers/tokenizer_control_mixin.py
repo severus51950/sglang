@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 import time
 import uuid
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+)
 
 import fastapi
 
@@ -33,6 +39,7 @@ from sglang.srt.managers.io_struct import (
     FlushCacheReqOutput,
     GetInternalStateReq,
     GetInternalStateReqOutput,
+    GetLoadsReqInput,
     GetLoadsReqOutput,
     GetWeightsByNameReqInput,
     GetWeightsByNameReqOutput,
@@ -72,12 +79,8 @@ from sglang.srt.managers.io_struct import (
     UpdateWeightsFromTensorReqInput,
     UpdateWeightsFromTensorReqOutput,
 )
-from sglang.srt.managers.load_snapshot import LoadSnapshot
 from sglang.srt.server_args import LoRARef, ServerArgs
-from sglang.srt.utils import (
-    get_bool_env_var,
-    normalize_serialized_named_tensor_payloads,
-)
+from sglang.srt.utils import get_bool_env_var
 from sglang.utils import TypeBasedDispatcher
 
 if TYPE_CHECKING:
@@ -132,11 +135,7 @@ class TokenizerControlMixin:
         for spec in _COMMUNICATOR_SPECS:
             name, resp_type = spec[0], spec[1]
             mode = spec[2] if len(spec) > 2 else "queueing"
-            comm = FanOutCommunicator(
-                self._dispatch_to_scheduler,
-                server_args.dp_size,
-                mode,
-            )
+            comm = FanOutCommunicator(self.send_to_scheduler, server_args.dp_size, mode)
             setattr(self, f"{name}_communicator", comm)
             dispatch_pairs.append((resp_type, comm.handle_recv))
         self._result_dispatcher += TypeBasedDispatcher(dispatch_pairs)
@@ -324,25 +323,43 @@ class TokenizerControlMixin:
 
     async def start_profile(
         self: TokenizerManager,
-        req: Optional[ProfileReq] = None,
+        output_dir: Optional[str] = None,
+        start_step: Optional[int] = None,
+        num_steps: Optional[int] = None,
+        activities: Optional[List[str]] = None,
+        with_stack: Optional[bool] = None,
+        record_shapes: Optional[bool] = None,
+        profile_by_stage: bool = False,
+        merge_profiles: bool = False,
+        profile_prefix: Optional[str] = None,
+        profile_stages: Optional[List[str]] = None,
     ):
         self.auto_create_handle_loop()
-        req = req or ProfileReq()
-        req.req_type = ProfileReqType.START_PROFILE
         env_with_stack: bool = get_bool_env_var("SGLANG_PROFILE_WITH_STACK", "true")
-        req.with_stack = (
-            False if req.with_stack is False or env_with_stack is False else True
-        )
+        with_stack = False if with_stack is False or env_with_stack is False else True
         env_record_shapes: bool = get_bool_env_var(
             "SGLANG_PROFILE_RECORD_SHAPES", "true"
         )
-        req.record_shapes = (req.record_shapes is not False) and env_record_shapes
-        req.profile_id = req.profile_id or str(time.time())
+        record_shapes = (record_shapes is not False) and env_record_shapes
+        req = ProfileReq(
+            type=ProfileReqType.START_PROFILE,
+            output_dir=output_dir,
+            start_step=start_step,
+            num_steps=num_steps,
+            activities=activities,
+            with_stack=with_stack,
+            record_shapes=record_shapes,
+            profile_by_stage=profile_by_stage,
+            profile_id=str(time.time()),
+            merge_profiles=merge_profiles,
+            profile_prefix=profile_prefix,
+            profile_stages=profile_stages,
+        )
         return await self._execute_profile(req)
 
     async def stop_profile(self: TokenizerManager):
         self.auto_create_handle_loop()
-        req = ProfileReq(req_type=ProfileReqType.STOP_PROFILE)
+        req = ProfileReq(type=ProfileReqType.STOP_PROFILE)
         return await self._execute_profile(req)
 
     async def _execute_profile(self: TokenizerManager, req: ProfileReq):
@@ -462,10 +479,6 @@ class TokenizerControlMixin:
 
         if obj.abort_all_requests:
             self.abort_request(abort_all=True)
-
-        obj.serialized_named_tensors = normalize_serialized_named_tensor_payloads(
-            obj.serialized_named_tensors
-        )
 
         async with self.is_pause_cond:
             is_paused = self.is_pause
@@ -751,24 +764,10 @@ class TokenizerControlMixin:
         self: TokenizerManager,
         obj: CheckWeightsReqInput,
         request: Optional[fastapi.Request] = None,
-    ) -> Tuple[bool, str, Optional[List[Dict]], Optional[str]]:
+    ) -> CheckWeightsReqOutput:
         self.auto_create_handle_loop()
         results = await self.check_weights_communicator(obj)
-        success, message = FanOutCommunicator.merge_results(results)
-        ranks: Optional[List[Dict]] = None
-        per_engine_checksum: Optional[str] = None
-        if any(r.payload is not None for r in results):
-            ranks = []
-            for r in results:
-                if isinstance(r.payload, list):
-                    ranks.extend(r.payload)
-                else:
-                    ranks.append(r.payload)
-            h = hashlib.sha256()
-            for rank in ranks:
-                h.update(rank["per_gpu_checksum"].encode())
-            per_engine_checksum = h.hexdigest()
-        return success, message, ranks, per_engine_checksum
+        return FanOutCommunicator.merge_results(results)
 
     async def slow_down(
         self: TokenizerManager,
@@ -806,27 +805,41 @@ class TokenizerControlMixin:
         self: TokenizerManager,
         include: Optional[List[str]] = None,
         dp_rank: Optional[int] = None,
-    ) -> List[LoadSnapshot]:
+    ) -> List[GetLoadsReqOutput]:
         """
-        Get load snapshots for /v1/loads endpoint.
+        Get comprehensive load metrics for /v1/loads endpoint.
 
         Args:
             include: List of sections to include. Options: core, memory, spec, lora, disagg, queues, all
             dp_rank: Optional filter for specific DP rank
 
         Returns:
-            List of LoadSnapshot, one per scheduler (filtered by dp_rank if specified)
+            List of GetLoadsReqOutput, one per scheduler (filtered by dp_rank if specified)
         """
         self.auto_create_handle_loop()
-        if dp_rank is not None and (dp_rank < 0 or dp_rank >= self.server_args.dp_size):
-            return []
+        # Always request all sections from scheduler — watching mode shares
+        # results across concurrent callers, so we fetch full data and filter here.
+        req = GetLoadsReqInput(include=["all"], dp_rank=None)
+        results = await self.get_loads_communicator(req)
 
-        reader = self.load_snapshot_reader
+        # Filter by dp_rank if specified
         if dp_rank is not None:
-            load = reader.read(dp_rank)
-            results = [load] if load is not None else []
-        else:
-            results = reader.read_all()
+            results = [r for r in results if r.dp_rank == dp_rank]
+
+        # Filter optional sections client-side (scheduler always returns all)
+        if include and "all" not in include:
+            include_set = set(include)
+            _section_attrs = {
+                "memory": "memory",
+                "spec": "speculative",
+                "lora": "lora",
+                "disagg": "disaggregation",
+                "queues": "queues",
+            }
+            for r in results:
+                for key, attr in _section_attrs.items():
+                    if key not in include_set:
+                        setattr(r, attr, None)
 
         return results
 
@@ -850,7 +863,7 @@ class TokenizerControlMixin:
 
         future = asyncio.Future()
         self.session_futures[obj.session_id] = future
-        self._dispatch_to_scheduler(obj)
+        self.send_to_scheduler.send_pyobj(obj)
 
         try:
             return await future
@@ -862,7 +875,7 @@ class TokenizerControlMixin:
         obj: CloseSessionReqInput,
         request: Optional[fastapi.Request] = None,
     ):
-        await self._async_dispatch_to_scheduler(obj)
+        await self.send_to_scheduler.send_pyobj(obj)
 
     def _update_weight_version_if_provided(
         self: TokenizerManager, weight_version: Optional[str]

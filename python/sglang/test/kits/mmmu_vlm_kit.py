@@ -198,7 +198,11 @@ class MMMUMixin:
             # Run evaluation
             self.run_mmmu_eval(self.model, output_path)
 
+            # Get the result file
+            # Search recursively for JSON result files (lmms-eval v0.4.1+ creates subdirectories)
             result_files = glob.glob(f"{output_path}/**/*.json", recursive=True)
+            if not result_files:
+                result_files = glob.glob(f"{output_path}/*.json")
 
             if not result_files:
                 raise FileNotFoundError(f"No JSON result files found in {output_path}")
@@ -367,7 +371,7 @@ class MMMUMultiModelTestBase(CustomTestCase):
                 api_key=self.api_key,
                 other_args=[
                     "--trust-remote-code",
-                    "--cuda-graph-max-bs-decode",
+                    "--cuda-graph-max-bs",
                     "64",
                     "--enable-multimodal",
                     "--mem-fraction-static",
@@ -385,7 +389,11 @@ class MMMUMultiModelTestBase(CustomTestCase):
             # Run evaluation
             self.run_mmmu_eval(model.model, output_path)
 
+            # Get the result file
+            # Search recursively for JSON result files (lmms-eval v0.4.1+ creates subdirectories)
             result_files = glob.glob(f"{output_path}/**/*.json", recursive=True)
+            if not result_files:
+                result_files = glob.glob(f"{output_path}/*.json")
 
             if not result_files:
                 raise FileNotFoundError(f"No JSON result files found in {output_path}")

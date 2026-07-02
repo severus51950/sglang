@@ -61,11 +61,6 @@ def _chunked_lora_shrink_kernel(
 
     pid_n = tl.program_id(0)
 
-    seg_start = tl.load(seg_indptr + pid_s)
-    seg_end = tl.load(seg_indptr + pid_s + 1)
-    if seg_start == seg_end:
-        return
-
     # Current block computes sequence with batch_id,
     # which starts from row seg_start of x with length seg_len
     w_index = tl.load(weight_indices + pid_s)
@@ -75,13 +70,16 @@ def _chunked_lora_shrink_kernel(
     if rank == 0:
         return
 
+    seg_start = tl.load(seg_indptr + pid_s)
+    seg_end = tl.load(seg_indptr + pid_s + 1)
+
     # Adjust N dim according to the specific LoRA adapter
     cur_n = tl.minimum(N, rank * NUM_SLICES)
 
     # Map logical sequence index to physical index
     s_offset_logical = tl.arange(0, BLOCK_M) + seg_start
     s_offset_physical = tl.load(
-        permutation + s_offset_logical, mask=s_offset_logical < seg_end, other=0
+        permutation + s_offset_logical, mask=s_offset_logical < seg_end
     )
 
     n_offset = tl.arange(0, BLOCK_N) + pid_n * BLOCK_N
@@ -156,14 +154,9 @@ def chunked_sgmv_lora_shrink_forward(
     assert x.shape[-1] == K
 
     num_segments = batch_info.num_segments
-    segment_grid = (
-        batch_info.weight_indices.shape[0]
-        if batch_info.use_cuda_graph
-        else num_segments
-    )
     grid = (
         triton.cdiv(N, BLOCK_N),
-        segment_grid,
+        batch_info.bs if batch_info.use_cuda_graph else num_segments,
     )
 
     # Optional launch params from tuned config
@@ -182,7 +175,7 @@ def chunked_sgmv_lora_shrink_forward(
         weight_indices=batch_info.weight_indices,
         lora_ranks=batch_info.lora_ranks,
         permutation=batch_info.permutation,
-        num_segs=segment_grid,
+        num_segs=num_segments,
         # constants
         N=N,
         K=K,

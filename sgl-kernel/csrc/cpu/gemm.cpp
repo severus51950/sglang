@@ -722,10 +722,10 @@ at::Tensor convert_scale_packed(at::Tensor& scale) {
   return packed_scale;
 }
 
-// mat1 : [*, K]
+// mat1 : [M, K]
 // mat2 : [N, K] ([K, N] if use_fma_gemm)
 // bias : [N]
-// out  : [*, N]
+// out  : [M, N]
 //
 at::Tensor
 weight_packed_linear(at::Tensor& mat1, at::Tensor& mat2, const std::optional<at::Tensor>& bias, bool is_vnni) {
@@ -735,25 +735,23 @@ weight_packed_linear(at::Tensor& mat1, at::Tensor& mat2, const std::optional<at:
     use_fma_gemm = true;
   }
 
+  int64_t M = mat1.size(0);
+  int64_t K = mat1.size(1);
+  int64_t N = use_fma_gemm ? mat2.size(1) : mat2.size(0);
+
   CHECK_LAST_DIM_CONTIGUOUS_INPUT(mat1);
   CHECK_INPUT(mat2);
-  const int64_t ndim = mat1.ndimension();
-  auto input_sizes = mat1.sizes().vec();
-  int64_t N = use_fma_gemm ? mat2.size(1) : mat2.size(0);
-  int64_t K = use_fma_gemm ? mat1.size(1) : mat2.size(1);
-  int64_t M = use_fma_gemm ? mat1.size(0) : mat1.numel() / K;
+  CHECK_DIM(2, mat1);
   CHECK_DIM(2, mat2);
-  if (use_fma_gemm) {
-    CHECK_DIM(2, mat1);
-  } else {
-    CHECK_EQ(mat1.size(ndim - 1), K);
+  if (!use_fma_gemm) {
+    CHECK_EQ(mat1.size(1), K);
   }
 
   auto dispatch_type = mat1.scalar_type();
   auto out = at::empty({M, N}, mat1.options());
   // strides
   int64_t out_strideM = out.stride(0);
-  int64_t mat1_strideM = mat1.stride(-2);
+  int64_t mat1_strideM = mat1.stride(0);
 
   const bool has_bias = bias.has_value();
   const float* bias_data = nullptr;
@@ -789,8 +787,7 @@ weight_packed_linear(at::Tensor& mat1, at::Tensor& mat2, const std::optional<at:
     }
   });
 
-  input_sizes[ndim - 1] = N;
-  return out.view(input_sizes);
+  return out;
 }
 
 // mat1         : [M, K]

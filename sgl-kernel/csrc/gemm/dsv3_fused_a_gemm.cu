@@ -285,7 +285,7 @@ struct GmemLoaderB {
 
   __device__ void issue_mainloop() {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
-    cudaGridDependencySynchronize();
+    asm volatile("griddepcontrol.wait;");
 #pragma unroll 1
     for (int loop_idx = 0; loop_idx < k_iter_cnt; loop_idx++) {
       if (need_wait) {
@@ -571,7 +571,7 @@ __global__ __launch_bounds__(256, 1) void fused_a_gemm_kernel(
     mma_computer.issue_mainloop();
     mma_computer.epi();
   }
-  cudaTriggerProgrammaticLaunchCompletion();
+  asm volatile("griddepcontrol.launch_dependents;");
 #endif
 }
 

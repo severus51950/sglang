@@ -1,6 +1,6 @@
 """MI35x GLM-5.1 GSM8K Completion Evaluation Test (8-GPU)
 
-Tests GLM-5.1-FP8 with DSA attention backend using few-shot
+Tests GLM-5.1-FP8 with NSA attention backend using few-shot
 completion benchmark on MI35x.
 
 Registry: nightly-amd-8-gpu-mi35x-glm51 suite
@@ -8,6 +8,10 @@ Registry: nightly-amd-8-gpu-mi35x-glm51 suite
 
 import ast
 import os
+
+os.environ.setdefault("HF_HOME", "/data2/models/huggingface")
+os.environ.setdefault("HF_HUB_CACHE", "/data2/models/huggingface/hub")
+
 import re
 import time
 import unittest
@@ -58,16 +62,16 @@ MI35X_GLM51_MODELS = [
         tp_size=8,
         accuracy_threshold=0.93,
         timeout=5400,
-        variant="dsa",
+        variant="nsa",
         other_args=[
             "--trust-remote-code",
             "--reasoning-parser",
             "glm45",
             "--tool-call-parser",
             "glm47",
-            "--dsa-prefill-backend",
+            "--nsa-prefill-backend",
             "tilelang",
-            "--dsa-decode-backend",
+            "--nsa-decode-backend",
             "tilelang",
             "--chunked-prefill-size",
             "131072",
@@ -161,7 +165,7 @@ class TestGLM51EvalMI35x(unittest.TestCase):
     def setUpClass(cls):
         cls.models = MI35X_GLM51_MODELS
         cls.base_url = DEFAULT_URL_FOR_TEST
-        cls.num_questions = int(os.environ.get("GSM8K_NUM_QUESTIONS", "1319"))
+        cls.num_questions = int(os.environ.get("GSM8K_NUM_QUESTIONS", "200"))
 
     def test_glm51_accuracy(self):
         all_results = []

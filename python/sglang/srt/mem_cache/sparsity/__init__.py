@@ -1,7 +1,7 @@
 from sglang.srt.mem_cache.sparsity.algorithms import (
     BaseSparseAlgorithm,
     BaseSparseAlgorithmImpl,
-    DeepSeekDSAAlgorithm,
+    DeepSeekNSAAlgorithm,
     QuestAlgorithm,
 )
 from sglang.srt.mem_cache.sparsity.backend import BackendAdaptor, FlashAttentionAdaptor
@@ -17,7 +17,7 @@ __all__ = [
     "BaseSparseAlgorithm",
     "BaseSparseAlgorithmImpl",
     "QuestAlgorithm",
-    "DeepSeekDSAAlgorithm",
+    "DeepSeekNSAAlgorithm",
     "BackendAdaptor",
     "FlashAttentionAdaptor",
     "SparseConfig",

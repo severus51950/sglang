@@ -14,7 +14,6 @@ from sglang.multimodal_gen.runtime.disaggregation.transport.buffer import (
 from sglang.multimodal_gen.runtime.disaggregation.transport.engine import (
     BaseTransferEngine,
 )
-from sglang.multimodal_gen.runtime.platforms import current_platform
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +75,7 @@ class DiffusionTransferManager:
         request_id: str,
         tensor_fields: dict[str, torch.Tensor | list[torch.Tensor] | None],
         scalar_fields: dict | None = None,
-        stream: torch.Stream | None = None,
+        stream: torch.cuda.Stream | None = None,
     ) -> StagedTransfer | None:
         """Stage GPU tensors into the local TransferBuffer. Returns None on allocation failure."""
         total_size = 0
@@ -113,8 +112,8 @@ class DiffusionTransferManager:
 
         if stream is not None:
             stream.synchronize()
-        elif torch.get_device_module().is_available():
-            torch.get_device_module().synchronize()
+        elif torch.cuda.is_available():
+            torch.cuda.synchronize()
 
         staged = StagedTransfer(
             request_id=request_id,
@@ -138,8 +137,8 @@ class DiffusionTransferManager:
         request_id: str,
         tensor_fields: dict[str, torch.Tensor | list[torch.Tensor] | None],
         scalar_fields: dict | None = None,
-        stream: torch.Stream | None = None,
-    ) -> tuple[StagedTransfer | None, torch.Event | None]:
+        stream: torch.cuda.Stream | None = None,
+    ) -> tuple[StagedTransfer | None, torch.cuda.Event | None]:
         """Stage GPU tensors, returning a CUDA event instead of blocking.
 
         Caller MUST wait on the event before reading buffer data.
@@ -178,11 +177,11 @@ class DiffusionTransferManager:
 
         d2h_event = None
         if stream is not None:
-            d2h_event = torch.get_device_module().Event()
+            d2h_event = torch.cuda.Event()
             d2h_event.record(stream)
-        elif torch.get_device_module().is_available():
-            d2h_event = torch.get_device_module().Event()
-            d2h_event.record(torch.get_device_module().current_stream())
+        elif torch.cuda.is_available():
+            d2h_event = torch.cuda.Event()
+            d2h_event.record(torch.cuda.current_stream())
 
         staged = StagedTransfer(
             request_id=request_id,
@@ -205,12 +204,9 @@ class DiffusionTransferManager:
         self,
         request_id: str,
         manifest: dict,
-        device: torch.device | str = current_platform.device_type,
-        stream: torch.Stream | None = None,
-    ) -> tuple[
-        dict[str, torch.Tensor | list[torch.Tensor]],
-        torch.get_device_module().Event | None,
-    ]:
+        device: torch.device | str = "cuda",
+        stream: torch.cuda.Stream | None = None,
+    ) -> tuple[dict[str, torch.Tensor | list[torch.Tensor]], torch.cuda.Event | None]:
         """Load tensors from receive slot to GPU, returning a CUDA event.
 
         Caller MUST wait on the event before using the returned tensors.
@@ -229,11 +225,11 @@ class DiffusionTransferManager:
 
         load_event = None
         if stream is not None:
-            load_event = torch.get_device_module().Event()
+            load_event = torch.cuda.Event()
             load_event.record(stream)
-        elif torch.get_device_module().is_available():
-            load_event = torch.get_device_module().Event()
-            load_event.record(torch.get_device_module().current_stream())
+        elif torch.cuda.is_available():
+            load_event = torch.cuda.Event()
+            load_event.record(torch.cuda.current_stream())
 
         logger.debug(
             "TransferManager: loaded_async %d tensor fields for %s to %s",
@@ -319,8 +315,8 @@ class DiffusionTransferManager:
         self,
         request_id: str,
         manifest: dict,
-        device: torch.device | str = current_platform.device_type,
-        stream: torch.Stream | None = None,
+        device: torch.device | str = "cuda",
+        stream: torch.cuda.Stream | None = None,
     ) -> dict[str, torch.Tensor | list[torch.Tensor]]:
         """Load tensors from a receive slot into GPU memory."""
         with self._lock:
@@ -337,8 +333,8 @@ class DiffusionTransferManager:
 
         if stream is not None:
             stream.synchronize()
-        elif torch.get_device_module().is_available():
-            torch.get_device_module().synchronize()
+        elif torch.cuda.is_available():
+            torch.cuda.synchronize()
 
         logger.debug(
             "TransferManager: loaded %d tensor fields for %s to %s",

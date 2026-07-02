@@ -28,13 +28,13 @@ from transformers import (
 from sglang.srt.connector import create_remote_connector
 from sglang.srt.utils import is_remote_url, logger
 from sglang.srt.utils.patch_tokenizer import patch_tokenizer
+from sglang.srt.utils.runai_utils import ObjectStorageModel, is_runai_obj_uri
 
 from ..hf_transformers_patches import _ensure_gguf_version
 from .common import (
     _resolve_local_or_cached_file,
     attach_additional_stop_token_ids,
     check_gguf_file,
-    resolve_runai_obj_uri,
 )
 from .mistral_utils import (
     _MISTRAL_TOKENIZER_REDIRECTS,
@@ -105,7 +105,7 @@ def _load_tokenizer_by_declared_class(tokenizer_name, *args, **kwargs):
     if tok_cls is None:
         return None
 
-    logger.debug(
+    logger.info(
         "Loading tokenizer for %s directly as %s (bypassing AutoTokenizer)",
         tokenizer_name,
         tok_class_name,
@@ -146,7 +146,8 @@ def _resolve_tokenizer_name(tokenizer_name, kwargs):
         kwargs["gguf_file"] = tokenizer_name
         tokenizer_name = Path(tokenizer_name).parent
 
-    tokenizer_name = resolve_runai_obj_uri(tokenizer_name)
+    if is_runai_obj_uri(tokenizer_name):
+        tokenizer_name = ObjectStorageModel.get_path(tokenizer_name)
 
     if is_remote_url(tokenizer_name):
         # BaseConnector implements __del__() to clean up the local dir.
@@ -157,33 +158,6 @@ def _resolve_tokenizer_name(tokenizer_name, kwargs):
         tokenizer_name = client.get_local_dir()
 
     return tokenizer_name
-
-
-# TODO: Remove after bumping huggingface transformers to v5.12
-def _retry_auto_tokenizer_with_glm_moe_dsa_config(
-    tokenizer_name, args, common_kwargs, error
-):
-    from .config import (
-        _is_legacy_glm_moe_dsa_layer_types_error,
-        _load_glm_moe_dsa_config_without_legacy_layer_types,
-    )
-
-    if not _is_legacy_glm_moe_dsa_layer_types_error(error):
-        return None
-
-    config = _load_glm_moe_dsa_config_without_legacy_layer_types(
-        tokenizer_name, revision=common_kwargs.get("tokenizer_revision")
-    )
-    if config is None:
-        return None
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        tokenizer_name, *args, **{**common_kwargs, "config": config}
-    )
-    logging.getLogger(tokenizer.__class__.__module__).addFilter(
-        TokenizerWarningsFilter()
-    )
-    return tokenizer
 
 
 def _auto_tokenizer_from_pretrained(tokenizer_name, *args, **common_kwargs):
@@ -197,11 +171,6 @@ def _auto_tokenizer_from_pretrained(tokenizer_name, *args, **common_kwargs):
         )
         return tokenizer
     except TypeError as e:
-        tokenizer = _retry_auto_tokenizer_with_glm_moe_dsa_config(
-            tokenizer_name, args, common_kwargs, e
-        )
-        if tokenizer is not None:
-            return tokenizer
         err_msg = (
             "Failed to load the tokenizer. If you are using a LLaMA V1 model "
             f"consider using '{_FAST_LLAMA_TOKENIZER}' instead of the "
@@ -209,11 +178,6 @@ def _auto_tokenizer_from_pretrained(tokenizer_name, *args, **common_kwargs):
         )
         raise RuntimeError(err_msg) from e
     except ValueError as e:
-        tokenizer = _retry_auto_tokenizer_with_glm_moe_dsa_config(
-            tokenizer_name, args, common_kwargs, e
-        )
-        if tokenizer is not None:
-            return tokenizer
         # MistralCommon tokenizers reject standard HF kwargs like
         # trust_remote_code, use_fast etc. Retry without them.
         if "are not supported by" in str(e) and "MistralCommon" in str(e):
@@ -234,13 +198,6 @@ def _auto_tokenizer_from_pretrained(tokenizer_name, *args, **common_kwargs):
             )
             raise RuntimeError(err_msg) from e
         raise
-    except Exception as e:
-        tokenizer = _retry_auto_tokenizer_with_glm_moe_dsa_config(
-            tokenizer_name, args, common_kwargs, e
-        )
-        if tokenizer is not None:
-            return tokenizer
-        raise
 
 
 def _resolve_tokenizers_backend(tokenizer_name, *args, **common_kwargs):
@@ -252,7 +209,7 @@ def _resolve_tokenizers_backend(tokenizer_name, *args, **common_kwargs):
     ``tokenizer_config.json``.  May still return a ``TokenizersBackend``
     if all retries fail (with a warning).
     """
-    logger.debug(
+    logger.warning(
         "Tokenizer loaded as generic TokenizersBackend for %s, "
         "retrying with use_fast=False",
         tokenizer_name,
@@ -262,16 +219,7 @@ def _resolve_tokenizers_backend(tokenizer_name, *args, **common_kwargs):
         tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_name, *args, **common_kwargs
         )
-    except Exception as e:
-        tokenizer = _retry_auto_tokenizer_with_glm_moe_dsa_config(
-            tokenizer_name, args, common_kwargs, e
-        )
-        if tokenizer is not None:
-            return tokenizer
-        if not isinstance(
-            e, (ValueError, TypeError, OSError, ImportError, RuntimeError)
-        ):
-            raise
+    except (ValueError, TypeError, OSError, ImportError, RuntimeError) as e:
         raise RuntimeError(
             f"Retry with use_fast=False for {tokenizer_name} also failed "
             f"(initial load returned TokenizersBackend): {e}"
@@ -292,7 +240,7 @@ def _resolve_tokenizers_backend(tokenizer_name, *args, **common_kwargs):
                 tokenizer_name,
             )
         else:
-            logger.debug(
+            logger.warning(
                 "Tokenizer for %s loaded as generic TokenizersBackend. "
                 "Set --trust-remote-code to load the model-specific tokenizer.",
                 tokenizer_name,
@@ -488,45 +436,19 @@ def _apply_post_load_fixes(tokenizer, tokenizer_name, revision):
 # ---------------------------------------------------------------------------
 
 
-_fastokens_patched = False
-
-
-def _ensure_fastokens_patched():
-    """Monkey-patch transformers to use the fastokens backend (once)."""
-    global _fastokens_patched
-    if _fastokens_patched:
-        return
-    try:
-        import fastokens
-    except ImportError:
-        raise ImportError(
-            "The fastokens package is required when --tokenizer-backend=fastokens. "
-            "Install it with: pip install 'sglang[fastokens]'"
-        ) from None
-
-    fastokens.patch_transformers()
-    _fastokens_patched = True
-    logger.info("fastokens backend enabled - transformers patched successfully")
-
-
 def get_tokenizer(
     tokenizer_name: str,
     *args,
     tokenizer_mode: str = "auto",
     trust_remote_code: bool = False,
     tokenizer_revision: Optional[str] = None,
-    tokenizer_backend: str = "huggingface",
     **kwargs,
 ) -> Union[PreTrainedTokenizer, PreTrainedTokenizerFast]:
     """Gets a tokenizer for the given model name via Huggingface."""
-    # Tiktoken format has its own backend — no fastokens patching needed.
     if tokenizer_name.endswith(".json"):
         from sglang.srt.tokenizer.tiktoken_tokenizer import TiktokenTokenizer
 
         return TiktokenTokenizer(tokenizer_name)
-
-    if tokenizer_backend == "fastokens":
-        _ensure_fastokens_patched()
 
     if tokenizer_mode == "slow":
         if kwargs.get("use_fast", False):
@@ -548,32 +470,12 @@ def get_tokenizer(
         **kwargs,
     )
 
-    try:
-        tokenizer = _auto_tokenizer_from_pretrained(
-            tokenizer_name, *args, **common_kwargs
-        )
+    tokenizer = _auto_tokenizer_from_pretrained(tokenizer_name, *args, **common_kwargs)
 
-        # With fastokens, the patched TokenizersBackend.from_pretrained already
-        # returned a tokenizer whose backend is a fastokens shim. Re-resolving via
-        # the declared class (e.g. Qwen2Tokenizer) would discard that work.
-        if (
-            type(tokenizer).__name__ == _TOKENIZERS_BACKEND
-            and tokenizer_backend != "fastokens"
-        ):
-            tokenizer = _resolve_tokenizers_backend(
-                tokenizer_name, *args, **common_kwargs
-            )
+    if type(tokenizer).__name__ == _TOKENIZERS_BACKEND:
+        tokenizer = _resolve_tokenizers_backend(tokenizer_name, *args, **common_kwargs)
 
-        return _apply_post_load_fixes(tokenizer, tokenizer_name, tokenizer_revision)
-    except Exception as e:
-        if tokenizer_backend == "fastokens":
-            raise RuntimeError(
-                f"fastokens failed to load tokenizer for {tokenizer_name!r}. "
-                f"This model's tokenizer may not be supported by fastokens — "
-                f"see https://github.com/crusoecloud/fastokens. "
-                f"Re-run without --tokenizer-backend=fastokens to use the default backend."
-            ) from e
-        raise
+    return _apply_post_load_fixes(tokenizer, tokenizer_name, tokenizer_revision)
 
 
 # ---------------------------------------------------------------------------

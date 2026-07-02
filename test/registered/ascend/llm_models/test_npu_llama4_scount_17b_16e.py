@@ -7,7 +7,12 @@ from sglang.test.ascend.test_ascend_utils import (
 from sglang.test.ci.ci_register import register_npu_ci
 from sglang.test.test_utils import CustomTestCase
 
-register_npu_ci(est_time=400, suite="nightly-4-npu-a3", nightly=True)
+register_npu_ci(
+    est_time=400,
+    suite="nightly-4-npu-a3",
+    nightly=True,
+    disabled="https://github.com/Ascend/sglang/issues/25",
+)
 
 
 class TestLlama4(GSM8KAscendMixin, CustomTestCase):
@@ -19,7 +24,6 @@ class TestLlama4(GSM8KAscendMixin, CustomTestCase):
 
     model = LLAMA_4_SCOUT_17B_16E_INSTRUCT_WEIGHTS_PATH
     accuracy = 0.9
-    timeout_for_server_launch = 1000
     other_args = [
         "--chat-template",
         "llama-4",

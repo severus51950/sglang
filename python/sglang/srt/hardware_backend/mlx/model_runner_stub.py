@@ -9,9 +9,6 @@ from typing import Tuple
 
 import torch
 
-from sglang.srt.hardware_backend.mlx.kv_cache.auxiliary_state import (
-    MlxAuxiliaryStateReqToTokenPool,
-)
 from sglang.srt.mem_cache.allocator import TokenToKVPoolAllocator
 from sglang.srt.mem_cache.memory_pool import KVCache, ReqToTokenPool
 from sglang.srt.model_executor.model_runner import ModelRunner
@@ -20,11 +17,11 @@ logger = logging.getLogger(__name__)
 
 
 class _DummyKVCache(KVCache):
-    """Scheduler-facing KV cache that allocates no GPU memory.
+    """A KV cache that allocates no GPU memory.
 
     Satisfies the KVCache interface so that TokenToKVPoolAllocator can be
-    constructed, but every buffer access raises. The MLX backend manages
-    attention KV and auxiliary state internally.
+    constructed, but every buffer access raises — the MLX backend manages
+    its own KV cache internally.
     """
 
     def __init__(self, size: int, dtype: torch.dtype, device: str):
@@ -45,16 +42,16 @@ class _DummyKVCache(KVCache):
         self.custom_mem_pool = None
 
     def get_key_buffer(self, layer_id: int) -> torch.Tensor:
-        raise RuntimeError("_DummyKVCache has no key buffer (MLX manages cache)")
+        raise RuntimeError("_DummyKVCache has no key buffer (MLX manages KV cache)")
 
     def get_value_buffer(self, layer_id: int) -> torch.Tensor:
-        raise RuntimeError("_DummyKVCache has no value buffer (MLX manages cache)")
+        raise RuntimeError("_DummyKVCache has no value buffer (MLX manages KV cache)")
 
     def get_kv_buffer(self, layer_id: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        raise RuntimeError("_DummyKVCache has no kv buffer (MLX manages cache)")
+        raise RuntimeError("_DummyKVCache has no kv buffer (MLX manages KV cache)")
 
     def set_kv_buffer(self, layer, loc, cache_k, cache_v) -> None:
-        raise RuntimeError("_DummyKVCache cannot set kv buffer (MLX manages cache)")
+        raise RuntimeError("_DummyKVCache cannot set kv buffer (MLX manages KV cache)")
 
     def get_kv_size_bytes(self):
         return 0, 0
@@ -76,14 +73,6 @@ class MlxModelRunnerStub(ModelRunner):
     weights are loaded and no large KV cache tensors are allocated.  Only
     the minimal bookkeeping pools needed by the scheduler are created.
     """
-
-    # No KV canary on the MLX path. The base ModelRunner installs it via
-    # install_canary() in its full initialize(), which this lightweight override
-    # skips. Downstream consumers (scheduler, cuda graph runner, speculative
-    # workers) all guard with `canary_manager is not None`, so default to None
-    # as a class attribute to keep those checks working instead of raising
-    # AttributeError.
-    canary_manager = None
 
     def __init__(self, *args, mlx_pool_size: int | None = None, **kwargs):
         self._mlx_pool_size = mlx_pool_size
@@ -111,7 +100,7 @@ class MlxModelRunnerStub(ModelRunner):
         self.dtype = self.model_config.dtype
         self.weight_load_mem_usage = 0
 
-    def initialize(self):
+    def initialize(self, pre_model_load_memory: float):
         """Lightweight initialize that skips heavy PyTorch setup.
 
         Creates minimal req_to_token_pool and token_to_kv_pool_allocator
@@ -152,24 +141,12 @@ class MlxModelRunnerStub(ModelRunner):
         self.is_hybrid_swa = False
 
         # Create minimal pools
-        if self.mambaish_config is not None:
-            auxiliary_state_size = self.server_args.max_mamba_cache_size
-            if auxiliary_state_size is None:
-                auxiliary_state_size = self.max_running_requests * 4
-            self.req_to_token_pool = MlxAuxiliaryStateReqToTokenPool(
-                size=self.max_running_requests,
-                max_context_len=self.model_config.context_len,
-                device="cpu",
-                enable_memory_saver=False,
-                auxiliary_state_size=auxiliary_state_size,
-            )
-        else:
-            self.req_to_token_pool = ReqToTokenPool(
-                size=self.max_running_requests,
-                max_context_len=self.model_config.context_len,
-                device="cpu",
-                enable_memory_saver=False,
-            )
+        self.req_to_token_pool = ReqToTokenPool(
+            size=self.max_running_requests,
+            max_context_len=self.model_config.context_len,
+            device="cpu",
+            enable_memory_saver=False,
+        )
 
         dummy_kv = _DummyKVCache(
             size=self.max_total_num_tokens,
@@ -186,7 +163,7 @@ class MlxModelRunnerStub(ModelRunner):
         )
 
         # No CUDA graphs, no attention backend
-        self.decode_cuda_graph_runner = None
+        self.graph_runner = None
         self.graph_mem_usage = 0
         self.attn_backend = None
 
@@ -196,7 +173,3 @@ class MlxModelRunnerStub(ModelRunner):
             f"max_running_requests={self.max_running_requests}, "
             f"zero GPU KV cache allocation)"
         )
-
-    def alloc_memory_pool(self, memory_pool_config=None):
-        """No-op: MLX manages its own KV cache."""
-        pass

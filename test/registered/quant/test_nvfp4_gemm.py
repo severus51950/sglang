@@ -12,7 +12,7 @@ from sglang.test.test_utils import (
     try_cached_model,
 )
 
-register_cuda_ci(est_time=350, stage="base-c", runner_config="4-gpu-b200")
+register_cuda_ci(est_time=550, suite="nightly-4-gpu-b200", nightly=True)
 
 MODEL_PATH = "nvidia/Llama-3.1-8B-Instruct-NVFP4"
 
@@ -62,6 +62,11 @@ class FP4GemmBase:
 
 
 @unittest.skipIf(get_device_sm() < 100, "Test requires CUDA SM 100 or higher")
+class TestFP4GemmAuto(FP4GemmBase, unittest.TestCase):
+    backend = "auto"
+
+
+@unittest.skipIf(get_device_sm() < 100, "Test requires CUDA SM 100 or higher")
 class TestFP4GemmFlashinferCutlass(FP4GemmBase, unittest.TestCase):
     backend = "flashinfer_cutlass"
 
@@ -74,11 +79,6 @@ class TestFP4GemmFlashinferCudnn(FP4GemmBase, unittest.TestCase):
 @unittest.skipIf(get_device_sm() < 100, "Test requires CUDA SM 100 or higher")
 class TestFP4GemmFlashinferTrtllm(FP4GemmBase, unittest.TestCase):
     backend = "flashinfer_trtllm"
-
-
-@unittest.skipIf(get_device_sm() < 100, "Test requires CUDA SM 100 or higher")
-class TestFP4GemmFlashinferCutedsl(FP4GemmBase, unittest.TestCase):
-    backend = "flashinfer_cutedsl"
 
 
 if __name__ == "__main__":

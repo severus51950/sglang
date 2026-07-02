@@ -38,9 +38,6 @@ class AttentionBackendEnum(enum.Enum):
     AITER_SAGE = enum.auto()
     SLA_ATTN = enum.auto()
     SAGE_SLA_ATTN = enum.auto()
-    LASER_ATTN = enum.auto()
-    BLOCK_SPARSE_ATTN = enum.auto()
-    RAIN_FUSION_ATTN = enum.auto()
     NO_ATTENTION = enum.auto()
 
     def __str__(self):
@@ -55,9 +52,6 @@ class AttentionBackendEnum(enum.Enum):
             AttentionBackendEnum.VMOBA_ATTN,
             AttentionBackendEnum.SLA_ATTN,
             AttentionBackendEnum.SAGE_SLA_ATTN,
-            AttentionBackendEnum.LASER_ATTN,
-            AttentionBackendEnum.BLOCK_SPARSE_ATTN,
-            AttentionBackendEnum.RAIN_FUSION_ATTN,
         }
 
 
@@ -384,7 +378,7 @@ class Platform:
     @classmethod
     def get_available_gpu_memory(
         cls,
-        device_id: int | None = None,
+        device_id: int = 0,
         distributed: bool = False,
         empty_cache: bool = True,
         cpu_group: Any = None,

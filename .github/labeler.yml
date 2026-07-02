@@ -21,10 +21,8 @@ documentation:
   - changed-files:
     - any-glob-to-any-file:
       - '**/*.md'
-      - '**/*.mdx'
       - 'docs/**/*'
       - 'README*'
-      - 'docs_new/**/*'
 
 # Dependencies
 dependencies:

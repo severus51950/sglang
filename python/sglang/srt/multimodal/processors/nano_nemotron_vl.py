@@ -19,19 +19,13 @@ import numpy as np
 import torch
 from PIL import Image
 
-from sglang.srt.configs.nano_nemotron_vl import (
-    NemotronH_Nano_Omni_Reasoning_V3_Config,
-    NemotronH_Nano_VL_V2_Config,
-)
+from sglang.srt.configs.nano_nemotron_vl import NemotronH_Nano_VL_V2_Config
 from sglang.srt.managers.schedule_batch import (
     Modality,
     MultimodalDataItem,
     MultimodalProcessorOutput,
 )
-from sglang.srt.models.nano_nemotron_vl import (
-    NemotronH_Nano_Omni_Reasoning_V3,
-    NemotronH_Nano_VL_V2,
-)
+from sglang.srt.models.nano_nemotron_vl import NemotronH_Nano_VL_V2
 from sglang.srt.models.parakeet import ParakeetExtractor
 from sglang.srt.multimodal.audio_from_video import extract_audio_from_video_bytes
 from sglang.srt.multimodal.evs import EVSProcessor
@@ -57,7 +51,7 @@ MAX_FRAMES = 128
 
 
 class NanoNemotronVLImageProcessor(BaseMultimodalProcessor):
-    models = [NemotronH_Nano_VL_V2, NemotronH_Nano_Omni_Reasoning_V3]
+    models = [NemotronH_Nano_VL_V2]
     gpu_image_decode = (
         False  # NanoNemotronVL processes loaded image as PIL image explicitly
     )
@@ -65,11 +59,7 @@ class NanoNemotronVLImageProcessor(BaseMultimodalProcessor):
     def __init__(self, hf_config, server_args, _image_processor, *args, **kwargs):
         super().__init__(hf_config, server_args, _image_processor, *args, **kwargs)
         self.evs = EVSProcessor(
-            hf_config,
-            {
-                NemotronH_Nano_VL_V2_Config: NemotronH_Nano_VL_V2,
-                NemotronH_Nano_Omni_Reasoning_V3_Config: NemotronH_Nano_Omni_Reasoning_V3,
-            },
+            hf_config, {NemotronH_Nano_VL_V2_Config: NemotronH_Nano_VL_V2}
         )
         Image.MAX_IMAGE_PIXELS = None
         self.image_size = hf_config.image_size
@@ -213,7 +203,7 @@ class NanoNemotronVLImageProcessor(BaseMultimodalProcessor):
     async def process_mm_data_async(
         self, image_data, audio_data, input_text, request_obj, **kwargs
     ):
-        base_output = await self.load_mm_data(
+        base_output = self.load_mm_data(
             prompt=input_text,
             image_data=image_data,
             video_data=request_obj.video_data,

@@ -2,12 +2,15 @@
 from dataclasses import dataclass, field
 
 from sglang.multimodal_gen.configs.models.dits.base import DiTArchConfig, DiTConfig
-from sglang.multimodal_gen.configs.models.fsdp import is_block
+
+
+def is_blocks(n: str, m) -> bool:
+    return "blocks" in n and str.isdigit(n.split(".")[-1])
 
 
 @dataclass
 class HeliosArchConfig(DiTArchConfig):
-    _fsdp_shard_conditions: list = field(default_factory=lambda: [is_block])
+    _fsdp_shard_conditions: list = field(default_factory=lambda: [is_blocks])
 
     param_names_mapping: dict = field(
         default_factory=lambda: {

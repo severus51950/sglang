@@ -1,7 +1,6 @@
-from sglang.test.ci.ci_register import register_amd_ci, register_cuda_ci
+from sglang.test.ci.ci_register import register_cuda_ci
 
-register_cuda_ci(est_time=7, stage="base-b", runner_config="1-gpu-small")
-register_amd_ci(est_time=7, suite="stage-b-test-1-gpu-small-amd-mi35x")
+register_cuda_ci(est_time=7, suite="stage-b-test-1-gpu-small")
 
 import os
 import unittest
@@ -46,20 +45,20 @@ def _ref_update_like(
     intermediate_conv,
     *,
     state_indices_tensor,
-    step_indices_raw,
+    accepted_steps,
     mamba_track_indices=None,
     mamba_steps_to_track=None,
 ):
     """Reference implementation using PyTorch advanced indexing for correctness verification."""
-    total_requests = step_indices_raw.shape[0]
+    request_number = accepted_steps.shape[0]
     intermediate_state_indices = torch.arange(
-        total_requests, dtype=torch.int32, device=step_indices_raw.device
+        request_number, dtype=torch.int32, device=accepted_steps.device
     )
 
-    valid_mask = step_indices_raw >= 0
+    valid_mask = accepted_steps >= 0
     dst_state_indices = state_indices_tensor[valid_mask].to(torch.int64)
     src_state_indices = intermediate_state_indices[valid_mask].to(torch.int64)
-    last_steps = step_indices_raw[valid_mask].to(torch.int64)
+    last_steps = accepted_steps[valid_mask].to(torch.int64)
 
     # Only scatter if there are valid indices (but don't early return -
     # mamba_track_indices processing is independent)
@@ -111,7 +110,7 @@ def _fused_update_like(
     intermediate_conv,
     *,
     state_indices_tensor,
-    step_indices_raw,
+    accepted_steps,
     mamba_track_indices=None,
     mamba_steps_to_track=None,
 ):
@@ -121,13 +120,13 @@ def _fused_update_like(
         ssm_states,
         intermediate_ssm,
         state_indices_tensor,
-        step_indices_raw,
+        accepted_steps,
     )
     fused_mamba_state_scatter_with_mask(
         conv_states,
         intermediate_conv,
         state_indices_tensor,
-        step_indices_raw,
+        accepted_steps,
     )
 
     if mamba_track_indices is not None:
@@ -200,10 +199,10 @@ class TestMambaStateScatterCorrectness(unittest.TestCase):
             :B
         ].to(torch.int32)
 
-        step_indices_raw = torch.randint(0, D, (B,), device=device, dtype=torch.int64)
+        accepted_steps = torch.randint(0, D, (B,), device=device, dtype=torch.int64)
         # set ~10% invalid
         invalid = torch.rand((B,), device=device) < 0.1
-        step_indices_raw[invalid] = -1
+        accepted_steps[invalid] = -1
 
         # Optional track update
         mamba_track_indices = torch.randperm(C, device=device, dtype=torch.int64)[:B]
@@ -224,7 +223,7 @@ class TestMambaStateScatterCorrectness(unittest.TestCase):
             conv_ref,
             intermediate_conv,
             state_indices_tensor=state_indices_tensor,
-            step_indices_raw=step_indices_raw,
+            accepted_steps=accepted_steps,
             mamba_track_indices=mamba_track_indices,
             mamba_steps_to_track=mamba_steps_to_track,
         )
@@ -234,7 +233,7 @@ class TestMambaStateScatterCorrectness(unittest.TestCase):
             conv_fused,
             intermediate_conv,
             state_indices_tensor=state_indices_tensor,
-            step_indices_raw=step_indices_raw,
+            accepted_steps=accepted_steps,
             mamba_track_indices=mamba_track_indices,
             mamba_steps_to_track=mamba_steps_to_track,
         )
@@ -291,10 +290,10 @@ class TestMambaStateScatterPerf(unittest.TestCase):
         state_indices_tensor = torch.randperm(C, device=device, dtype=torch.int64)[
             :B
         ].to(torch.int32)
-        step_indices_raw = torch.randint(0, D, (B,), device=device, dtype=torch.int64)
+        accepted_steps = torch.randint(0, D, (B,), device=device, dtype=torch.int64)
         if invalid_ratio > 0:
             invalid = torch.rand((B,), device=device) < invalid_ratio
-            step_indices_raw[invalid] = -1
+            accepted_steps[invalid] = -1
 
         mamba_track_indices = None
         mamba_steps_to_track = None
@@ -315,7 +314,7 @@ class TestMambaStateScatterPerf(unittest.TestCase):
                 conv_states,
                 intermediate_conv,
                 state_indices_tensor=state_indices_tensor,
-                step_indices_raw=step_indices_raw,
+                accepted_steps=accepted_steps,
                 mamba_track_indices=mamba_track_indices,
                 mamba_steps_to_track=mamba_steps_to_track,
             )
@@ -327,7 +326,7 @@ class TestMambaStateScatterPerf(unittest.TestCase):
                 conv_states,
                 intermediate_conv,
                 state_indices_tensor=state_indices_tensor,
-                step_indices_raw=step_indices_raw,
+                accepted_steps=accepted_steps,
                 mamba_track_indices=mamba_track_indices,
                 mamba_steps_to_track=mamba_steps_to_track,
             )
@@ -340,7 +339,7 @@ class TestMambaStateScatterPerf(unittest.TestCase):
         ref_ms = _time_cuda_ms(ref_fn)
         fused_ms = _time_cuda_ms(fused_fn)
 
-        num_valid = int((step_indices_raw >= 0).sum().item())
+        num_valid = int((accepted_steps >= 0).sum().item())
         ratio = fused_ms / ref_ms if ref_ms > 0 else float("inf")
         speedup = ref_ms / fused_ms if fused_ms > 0 else float("inf")
 

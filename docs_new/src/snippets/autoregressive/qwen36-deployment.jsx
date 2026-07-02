@@ -8,8 +8,6 @@ export const Qwen36Deployment = () => {
         { id: 'h100', label: 'H100', default: true },
         { id: 'h200', label: 'H200', default: false },
         { id: 'b200', label: 'B200', default: false },
-        { id: 'b300', label: 'B300', default: false },
-        { id: 'xeon', label: 'XEON', default: false },
       ],
     },
     modelSize: {
@@ -49,20 +47,15 @@ export const Qwen36Deployment = () => {
     speculative: {
       name: 'speculative',
       title: 'Speculative Decoding (MTP)',
-      getDynamicItems: (values) => {
-        const isXeon = values.hardware === 'xeon';
-        return [
-          { id: 'disabled', label: 'Disabled', default: isXeon },
-          { id: 'enabled', label: 'Enabled', default: !isXeon, disabled: isXeon,
-            disabledReason: isXeon ? 'Speculative decoding is not supported on Xeon' : '' },
-        ];
-      },
+      items: [
+        { id: 'disabled', label: 'Disabled', default: false },
+        { id: 'enabled', label: 'Enabled', default: true },
+      ],
       commandRule: (value) => value === 'enabled' ? '--speculative-algorithm EAGLE \\\n  --speculative-num-steps 3 \\\n  --speculative-eagle-topk 1 \\\n  --speculative-num-draft-tokens 4' : null,
     },
     mambaCache: {
       name: 'mambaCache',
       title: 'Mamba Radix Cache',
-      condition: (values) => values.hardware !== 'xeon',
       getDynamicItems: (values) => {
         const mtpEnabled = values.speculative === 'enabled';
         if (mtpEnabled) {
@@ -86,16 +79,12 @@ export const Qwen36Deployment = () => {
       h100: { bf16: { tp: 1, mem: 0.8 }, fp8: { tp: 1, mem: 0.8 } },
       h200: { bf16: { tp: 1, mem: 0.8 }, fp8: { tp: 1, mem: 0.8 } },
       b200: { bf16: { tp: 1, mem: 0.8 }, fp8: { tp: 1, mem: 0.8 } },
-      b300: { bf16: { tp: 1, mem: 0.8 }, fp8: { tp: 1, mem: 0.8 } },
-      xeon: { bf16: { tp: 3 },           fp8: { tp: 3 } },
     },
     '27b': {
       baseName: '27B',
       h100: { bf16: { tp: 1, mem: 0.8 }, fp8: { tp: 1, mem: 0.8 } },
       h200: { bf16: { tp: 1, mem: 0.8 }, fp8: { tp: 1, mem: 0.8 } },
       b200: { bf16: { tp: 1, mem: 0.8 }, fp8: { tp: 1, mem: 0.8 } },
-      b300: { bf16: { tp: 1, mem: 0.8 }, fp8: { tp: 1, mem: 0.8 } },
-      xeon: { bf16: { tp: 6 },           fp8: { tp: 6 } },
     },
   };
 
@@ -147,7 +136,7 @@ export const Qwen36Deployment = () => {
       }
       return next;
     });
-  }, [values.speculative, values.hardware]);
+  }, [values.speculative]);
 
   const handleRadioChange = (optionName, value) => {
     setValues((prev) => ({ ...prev, [optionName]: value }));
@@ -170,9 +159,6 @@ export const Qwen36Deployment = () => {
     }
 
     cmd += `sglang serve --model-path ${modelName}`;
-    if (hardware === 'xeon') {
-      cmd += ` \\\n  --device cpu \\\n  --disable-overlap-schedule`;
-    }
     if (hwConfig.tp > 1) {
       cmd += ` \\\n  --tp ${hwConfig.tp}`;
     }
@@ -184,7 +170,6 @@ export const Qwen36Deployment = () => {
 
     for (const [key, option] of Object.entries(options)) {
       if (key === 'quantization' || key === 'hardware' || key === 'modelSize') continue;
-      if (option.condition && !option.condition(values)) continue;
       if (!option.commandRule) continue;
       const rule = option.commandRule(adjustedValues[key]);
       if (rule) {
@@ -195,12 +180,8 @@ export const Qwen36Deployment = () => {
     if (hardware === 'b200') {
       cmd += ` \\\n  --attention-backend trtllm_mha`;
     }
-    if (hardware === 'b300') {
-      cmd += ` \\\n  --attention-backend flashinfer`;
-    }
-    if (hwConfig.mem !== undefined) {
-      cmd += ` \\\n  --mem-fraction-static ${hwConfig.mem}`;
-    }
+
+    cmd += ` \\\n  --mem-fraction-static ${hwConfig.mem}`;
     return cmd;
   };
 
@@ -216,7 +197,6 @@ export const Qwen36Deployment = () => {
   return (
     <div style={containerStyle} className="not-prose">
       {Object.entries(options).map(([key, option]) => {
-        if (typeof option.condition === 'function' && !option.condition(values)) return null;
         const items = resolveItems(option, values);
         return (
           <div key={key} style={cardStyle}>

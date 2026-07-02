@@ -17,6 +17,7 @@ register_npu_ci(
     est_time=400,
     suite="nightly-2-npu-a3",
     nightly=True,
+    disabled="https://github.com/Ascend/sglang/issues/32",
 )
 
 
@@ -39,9 +40,7 @@ class TestEnableThinking(CustomTestCase):
             "--mem-fraction-static",
             0.95,
             "--tp",
-            2,
-            "--reasoning-parser",
-            "qwen3",
+            16,
         ]
         cls.process = popen_launch_server(
             cls.model,

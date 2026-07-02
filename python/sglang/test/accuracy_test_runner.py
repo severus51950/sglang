@@ -199,11 +199,8 @@ def _get_nemo_venv() -> Tuple[str, dict]:
             text=True,
         )
 
-    # Install nemo_skills.
-    # Pinned: NeMo-Skills main after PR #1433 pins litellm==1.83.14 (httpx==0.28.1),
-    # which is unsatisfiable against nemo-run's transitive leptonai dep.
-    nemo_skills_ref = "589294c"
-    print(f"Installing nemo_skills (pinned to {nemo_skills_ref})...")
+    # Install nemo_skills
+    print("Installing nemo_skills...")
     pip_result = subprocess.run(
         [
             "uv",
@@ -211,7 +208,7 @@ def _get_nemo_venv() -> Tuple[str, dict]:
             "install",
             "--python",
             f"{_nemo_venv_dir}/venv/bin/python",
-            f"git+https://github.com/NVIDIA/NeMo-Skills.git@{nemo_skills_ref}",
+            "git+https://github.com/NVIDIA/NeMo-Skills.git",
         ],
         capture_output=True,
         text=True,

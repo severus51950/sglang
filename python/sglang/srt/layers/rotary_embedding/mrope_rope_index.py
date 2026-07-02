@@ -159,7 +159,6 @@ def get_rope_index(
                     "qwen3_vl_moe",
                     "qwen3_5",
                     "qwen3_5_moe",
-                    "intern_s2_preview",
                 ):
                     t_index = (
                         torch.arange(llm_grid_t, device=position_ids.device)

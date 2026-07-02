@@ -1,7 +1,6 @@
 import logging
 
 import torch
-import transformers
 
 from sglang.srt.utils import cpu_has_amx_support
 
@@ -15,54 +14,11 @@ class CPUQuantMethod(IntEnum):
     INT8_W8A8 = 1
     FP8_W8A16 = 2
     INT4_W4A8 = 3
-    MXFP4 = 4
 
 
 class CPUQuantAlgo(IntEnum):
     AWQ = 0
     GPTQ = 1
-
-
-def fast_preprocess_cpu(
-    self,
-    images: list["torch.Tensor"],
-    do_resize: bool,
-    size,
-    interpolation,
-    do_rescale: bool,
-    rescale_factor: float,
-    do_normalize: bool,
-    image_mean,
-    image_std,
-    patch_size: int,
-    temporal_patch_size: int,
-    merge_size: int,
-    disable_grouping,
-    return_tensors,
-    **kwargs,
-):
-    pixel_values, image_grid_thw = torch.ops.sgl_kernel.image_preprocess_cpu(
-        images,
-        True,
-        do_resize,
-        size["shortest_edge"],
-        size["longest_edge"],
-        "bicubic",
-        do_rescale,
-        rescale_factor,
-        do_normalize,
-        image_mean,
-        image_std,
-        patch_size,
-        temporal_patch_size,
-        merge_size,
-        True,
-        torch.bfloat16,
-    )
-    return transformers.image_processing_base.BatchFeature(
-        data={"pixel_values": pixel_values, "image_grid_thw": image_grid_thw},
-        tensor_type=return_tensors,
-    )
 
 
 def amx_process_weight_after_loading(weight, is_conv=False):
@@ -71,12 +27,11 @@ def amx_process_weight_after_loading(weight, is_conv=False):
     if not cpu_has_amx_support():
         return weight
     if is_conv:
-        if weight.dim() == 5:
-            return torch.ops.sgl_kernel.conv3d_embed_weight_pack(weight)
         return torch.ops.sgl_kernel.causal_conv1d_weight_pack(
             weight.view(-1, weight.size(-1))
         )
-    return torch.ops.sgl_kernel.convert_weight_packed(weight)
+    else:
+        return torch.ops.sgl_kernel.convert_weight_packed(weight)
 
 
 # TODO: currently gemm kernel has the below requirements:
@@ -97,14 +52,13 @@ def dtype_is_supported(weight):
     return weight.dtype in [
         torch.float16,
         torch.bfloat16,
-        torch.uint8,
         torch.int8,
         torch.float8_e4m3fn,
     ]
 
 
 def is_dim_conv_weight(weight):
-    return (weight.dim() == 3 and weight.size(1) == 1) or weight.dim() == 5
+    return weight.dim() == 3 and weight.size(1) == 1
 
 
 def _init_amx_conv_state(conv_state):
@@ -166,7 +120,7 @@ def _amx_process_weight_after_loading(
             )
             packed_weight.__dict__ = weight_tensor.__dict__
             setattr(module, weight_name, packed_weight)
-            if is_conv_weight and weight_tensor.dim() != 5:
+            if is_conv_weight:
                 # need to use inplace copy for conv weight amx packing,
                 # as its usage in radix_linear_attention will use the original conv weight.
                 weight_tensor = weight_tensor.view(-1, weight_tensor.size(-1))
@@ -205,12 +159,7 @@ def _amx_process_weight_after_loading(
         and hasattr(module, "bias")
         and module.bias is not None
     ):
-        if is_conv_weight and module.weight.data.dim() == 5:
-            module.bias = torch.nn.Parameter(module.bias.data, requires_grad=False)
-        else:
-            module.bias = torch.nn.Parameter(
-                module.bias.data.float(), requires_grad=False
-            )
+        module.bias = torch.nn.Parameter(module.bias.data.float(), requires_grad=False)
 
 
 class PackWeightMethod:

@@ -20,10 +20,6 @@ from PIL import Image
 
 from sglang.multimodal_gen.configs.pipeline_configs.base import PipelineConfig
 from sglang.multimodal_gen.runtime.distributed import get_local_torch_device
-from sglang.multimodal_gen.runtime.managers.memory_managers.component_manager import (
-    ComponentResidencyStrategy,
-    get_global_component_residency_manager,
-)
 from sglang.multimodal_gen.runtime.models.vision_utils import (
     load_image as load_vision_image,
 )
@@ -45,7 +41,6 @@ from sglang.multimodal_gen.runtime.platforms import (
 from sglang.multimodal_gen.runtime.server_args import ServerArgs
 from sglang.multimodal_gen.runtime.utils.hf_diffusers_utils import maybe_download_model
 from sglang.multimodal_gen.runtime.utils.logging_utils import init_logger
-from sglang.multimodal_gen.runtime.utils.precision import resolve_precision
 
 logger = init_logger(__name__)
 
@@ -376,8 +371,6 @@ class DiffusersPipeline(ComposedPipelineBase):
         self._stage_name_mapping: dict[str, PipelineStage] = {}
         self.modules: dict[str, Any] = {}
         self.memory_usages: dict[str, float] = {}
-        self.component_residency_strategies: dict[str, ComponentResidencyStrategy] = {}
-        self.component_residency_manager = None
         self.post_init_called = False
         self.executor = executor or SyncExecutor(server_args=server_args)
         self._cache_dit_enabled = False
@@ -639,18 +632,10 @@ class DiffusersPipeline(ComposedPipelineBase):
             if hasattr(pipe, comp):
                 try:
                     component = getattr(pipe, comp)
-                    repeated_blocks = getattr(component, "_repeated_blocks", None)
-                    if (
-                        isinstance(component, torch.nn.Module)
-                        and repeated_blocks
-                        and hasattr(component, "compile_repeated_blocks")
-                    ):
-                        # Regional compilation: compile a single instance of each
-                        # repeated transformer block and let inductor's cache reuse
-                        # it for all repeats, instead of compiling the whole DiT as
-                        # one graph
-                        component.compile_repeated_blocks()
-                    elif isinstance(component, torch.nn.Module) and hasattr(
+                    # TODO(DefTruth): Add support for 'compile_repeated_blocks' for 'transformer'
+                    # modules which can significantly reduce compilation time for large models
+                    # with repeated blocks.
+                    if isinstance(component, torch.nn.Module) and hasattr(
                         component, "compile"
                     ):
                         # Prefer in-place compilation if supported. According to PyTorch documentation:
@@ -668,15 +653,21 @@ class DiffusersPipeline(ComposedPipelineBase):
         return pipe
 
     def _get_dtype(self, server_args: ServerArgs) -> torch.dtype:
-        """
-        Determine the dtype to use for model loading.
-        """
-        if hasattr(server_args, "pipeline_config") and server_args.pipeline_config:
-            return resolve_precision(server_args, "dit", precision_attr="dit_precision")
+        dtype = (
+            torch.bfloat16
+            if torch.get_device_module().is_bf16_supported()
+            else torch.float16
+        )
 
-        # precision-constraint: legacy fallback for callers without pipeline_config;
-        # prefer explicit dit_precision policy when available.
-        return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        dit_precision = server_args.pipeline_config.dit_precision
+        if dit_precision == "fp16":
+            dtype = torch.float16
+        elif dit_precision == "bf16":
+            dtype = torch.bfloat16
+        elif dit_precision == "fp32":
+            dtype = torch.float32
+
+        return dtype
 
     def _detect_pipeline_type(self) -> None:
         """Detect if this is an image or video pipeline."""
@@ -721,8 +712,6 @@ class DiffusersPipeline(ComposedPipelineBase):
         if stage_name in self._stage_name_mapping:
             raise ValueError(f"Duplicate stage name detected: {stage_name}")
 
-        stage.set_registered_stage_name(stage_name)
-        stage.set_profile_stage_name(self._profile_stage_name(stage, stage_name))
         self._stages.append(stage)
         self._stage_name_mapping[stage_name] = stage
         return self
@@ -737,13 +726,7 @@ class DiffusersPipeline(ComposedPipelineBase):
         """Execute the pipeline on the given batch."""
         if not self.post_init_called:
             self.post_init()
-
-        self.component_residency_manager = get_global_component_residency_manager(
-            self, server_args
-        )
-        self.executor.component_residency_manager = self.component_residency_manager
-
-        return self.executor.execute_with_profiling(self.stages, batch, server_args)
+        return self.executor.execute(self.stages, batch, server_args)
 
     @classmethod
     def from_pretrained(

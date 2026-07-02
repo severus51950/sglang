@@ -119,6 +119,9 @@ class EventPublisher(ABC):
     - This allows consumers to distinguish events from different DP ranks
     """
 
+    def __init__(self, attn_dp_rank: int = 0):
+        self._attn_dp_rank = attn_dp_rank
+
     @abstractmethod
     def publish(self, events: EventBatch) -> None:
         """Emit events in order.
@@ -180,6 +183,7 @@ class ZmqEventPublisher(EventPublisher):
         topic: str = "",
     ) -> None:
         # Storage
+        super().__init__(attn_dp_rank)
         self._event_queue = Queue[Optional[EventBatch]](maxsize=max_queue_size)
         self._buffer = deque[tuple[int, bytes]](maxlen=buffer_steps)
 
@@ -256,15 +260,10 @@ class ZmqEventPublisher(EventPublisher):
             self._pub = self._ctx.socket(zmq.PUB)
             self._pub.set_hwm(self._hwm)
             # Heuristic: bind if wildcard / * present, else connect.
-            # bind stable, connect volatile convention.
-            # ``0.0.0.0`` is the IPv4 bind-all wildcard alongside ``*``
-            # and ``::``; ``/server_info`` advertises it as a wildcard,
-            # so the publisher must bind it for the advertised endpoint
-            # to actually be listening.
+            # bind stable, connect volatile convention
             if (
                 "*" in self._endpoint
                 or "::" in self._endpoint
-                or "0.0.0.0" in self._endpoint
                 or self._endpoint.startswith("ipc://")
                 or self._endpoint.startswith("inproc://")
             ):

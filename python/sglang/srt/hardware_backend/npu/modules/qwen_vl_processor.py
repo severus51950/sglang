@@ -1,7 +1,12 @@
+from typing import Optional
+
 import torch
 import torchvision.transforms.v2.functional as tvF
 from transformers.image_processing_utils import BatchFeature
-from transformers.image_transforms import group_images_by_shape, reorder_images
+from transformers.image_processing_utils_fast import (
+    group_images_by_shape,
+    reorder_images,
+)
 from transformers.image_utils import (
     ChannelDimension,
     PILImageResampling,
@@ -58,8 +63,8 @@ def transform_patches_to_flatten(
     return flatten_patches
 
 
-# Func refers to transformers.models.qwen2_vl.image_processing_qwen2_vl.py
-# Qwen2VLImageProcessor._preprocess
+# Func refers to transformers.models.qwen2_vl.image_processing_qwen2_vl_fast.py
+# Qwen2VLImageProcessorFast._preprocess
 def npu_wrapper_preprocess(func):
 
     def _preprocess(
@@ -67,7 +72,7 @@ def npu_wrapper_preprocess(func):
         images: list["torch.Tensor"],
         do_resize: bool,
         size: SizeDict,
-        resample: "PILImageResampling | tvF.InterpolationMode | int | None",
+        interpolation: Optional["tvF.InterpolationMode"],
         do_rescale: bool,
         rescale_factor: float,
         do_normalize: bool,
@@ -92,13 +97,13 @@ def npu_wrapper_preprocess(func):
                     height,
                     width,
                     factor=patch_size * merge_size,
-                    min_pixels=size.shortest_edge,
-                    max_pixels=size.longest_edge,
+                    min_pixels=size["shortest_edge"],
+                    max_pixels=size["longest_edge"],
                 )
                 stacked_images = self.resize(
                     image=stacked_images,
                     size=SizeDict(height=resized_height, width=resized_width),
-                    resample=resample,
+                    interpolation=interpolation,
                 )
             resized_images_grouped[shape] = stacked_images
         resized_images = reorder_images(resized_images_grouped, grouped_images_index)
@@ -168,7 +173,7 @@ def npu_wrapper_preprocess(func):
 
 
 # Func refers to transformers.models.qwen3_vl.video_processing_qwen3_vl.py
-# Qwen3VLVideoProcessor._preprocess
+# Qwen3VLVideoProcessorFast._preprocess
 def npu_wrapper_video_preprocess(func):
 
     def _preprocess(
@@ -177,7 +182,7 @@ def npu_wrapper_video_preprocess(func):
         do_convert_rgb: bool = True,
         do_resize: bool = True,
         size: SizeDict | None = None,
-        resample: "PILImageResampling | tvF.InterpolationMode | int | None" = PILImageResampling.BICUBIC,
+        interpolation: PILImageResampling = PILImageResampling.BICUBIC,
         do_rescale: bool = True,
         rescale_factor: float = 1 / 255.0,
         do_normalize: bool = True,
@@ -209,7 +214,7 @@ def npu_wrapper_video_preprocess(func):
                 stacked_videos = self.resize(
                     stacked_videos,
                     size=SizeDict(height=resized_height, width=resized_width),
-                    resample=resample,
+                    interpolation=interpolation,
                 )
                 stacked_videos = stacked_videos.view(
                     B, T, C, resized_height, resized_width
@@ -292,7 +297,7 @@ def npu_apply_qwen_image_preprocess_patch():
     if _npu_preprocess_patched:
         return
     apply_module_patch(
-        "transformers.models.qwen2_vl.image_processing_qwen2_vl.Qwen2VLImageProcessor",
+        "transformers.models.qwen2_vl.image_processing_qwen2_vl_fast.Qwen2VLImageProcessorFast",
         "_preprocess",
         [npu_wrapper_preprocess],
     )

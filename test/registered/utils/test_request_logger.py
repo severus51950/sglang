@@ -190,11 +190,10 @@ class TestRequestLoggerJson(BaseTestRequestLogger, CustomTestCase):
         received_found = False
         finished_found = False
         for line in content.splitlines():
-            idx = line.find("{")
-            if idx == -1:
+            if not line.strip() or not line.startswith("{"):
                 continue
             try:
-                data = json.loads(line[idx:])
+                data = json.loads(line)
             except json.JSONDecodeError:
                 continue
 
@@ -228,11 +227,10 @@ class TestRequestLoggerJson(BaseTestRequestLogger, CustomTestCase):
     def _verify_openai_logs(self, content: str, source_name: str):
         openai_received_found = False
         for line in content.splitlines():
-            idx = line.find("{")
-            if idx == -1:
+            if not line.strip() or not line.startswith("{"):
                 continue
             try:
-                data = json.loads(line[idx:])
+                data = json.loads(line)
             except json.JSONDecodeError:
                 continue
             if data.get("event") != "request.received.openai":

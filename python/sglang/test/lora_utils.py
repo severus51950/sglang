@@ -236,7 +236,6 @@ def reference_embedding_lora_a_shrink(
     weight_indices: torch.Tensor,
     seq_lengths: torch.Tensor,
     lora_ranks: torch.Tensor,
-    lora_scalings: torch.Tensor,
     vocab_size: int,
 ) -> torch.Tensor:
     """
@@ -248,7 +247,6 @@ def reference_embedding_lora_a_shrink(
         weight_indices: LoRA idx for each sequence
         seq_lengths: Length of each sequence
         lora_ranks: LoRA rank for each LoRA adapters
-        lora_scalings: LoRA scaling for each LoRA adapters
         vocab_size: Base vocabulary size
 
     Returns:
@@ -266,11 +264,10 @@ def reference_embedding_lora_a_shrink(
     )
 
     token_offset = 0
-    for lora_idx, seq_len, rank, scaling in zip(
+    for lora_idx, seq_len, rank in zip(
         weight_indices,
         seq_lengths,
         lora_ranks[weight_indices],
-        lora_scalings[weight_indices],
     ):
         if seq_len == 0:
             continue
@@ -287,7 +284,7 @@ def reference_embedding_lora_a_shrink(
             lora_weights = weights[lora_idx, :rank, :]  # (rank, vocab_size)
             embeddings = lora_weights[:, clamped_ids].t()  # (seq_len, rank)
 
-            output[token_offset : token_offset + seq_len, :rank] = scaling * embeddings
+            output[token_offset : token_offset + seq_len, :rank] = embeddings
 
         token_offset += seq_len
 
@@ -825,7 +822,6 @@ def run_lora_batch_splitting_equivalence_test(
     disable_cuda_graph: bool = True,
     disable_radix_cache: bool = True,
     enable_lora_overlap_loading: Optional[bool] = None,
-    lora_drain_wait_threshold: float = 0.0,
 ):
     """
     Test that SRT correctly handles batch splitting with multiple LoRA adapters.
@@ -843,9 +839,6 @@ def run_lora_batch_splitting_equivalence_test(
         attention_backend: Attention backend to use
         disable_cuda_graph: Whether to disable CUDA graph
         disable_radix_cache: Whether to disable radix cache
-        lora_drain_wait_threshold: When any LoRA adapter request waits longer than
-            this threshold (in seconds), the scheduler will selectively drain one
-            running adapter to make room. Set to 0 to disable draining (default).
     """
     max_loras_per_batch = 2
 
@@ -858,14 +851,9 @@ def run_lora_batch_splitting_equivalence_test(
         max_new_tokens = 64
         base_path = model_case.base
 
-        maybe_drain_info = (
-            f", lora_drain_wait_threshold={lora_drain_wait_threshold}"
-            if lora_drain_wait_threshold > 0
-            else ""
-        )
         print(
             f"\n========== Testing batch splitting on base '{base_path}', "
-            f"dtype={torch_dtype}{maybe_drain_info} =========="
+            f"dtype={torch_dtype} =========="
         )
 
         prompts = [TEST_MULTIPLE_BATCH_PROMPTS[0]] * 3
@@ -909,7 +897,6 @@ def run_lora_batch_splitting_equivalence_test(
             attention_backend=attention_backend,
             disable_cuda_graph=disable_cuda_graph,
             disable_radix_cache=disable_radix_cache,
-            lora_drain_wait_threshold=lora_drain_wait_threshold,
         ) as srt_runner:
             for batch_idx, (batch_prompts, lora_paths) in enumerate(test_cases):
                 print(f"\n--- Batch {batch_idx + 1} ---")

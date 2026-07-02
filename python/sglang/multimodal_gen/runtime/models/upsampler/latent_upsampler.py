@@ -8,11 +8,6 @@ import torch
 import torch.nn.functional as F
 from einops import rearrange
 
-from sglang.jit_kernel.diffusion.group_norm_silu import apply_group_norm_silu
-from sglang.multimodal_gen.runtime.managers.memory_managers.layerwise_offload import (
-    LayerwiseOffloadableModuleMixin,
-)
-
 
 class BlurDownsample(torch.nn.Module):
     """Anti-aliased spatial downsampling by integer stride using a fixed separable binomial kernel."""
@@ -111,11 +106,8 @@ class ResBlock(torch.nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         residual = x
         x = self.conv1(x)
-        # Fused GroupNorm + SiLU on the first norm of the block. The second
-        # norm (line below) is followed by `silu(norm + residual)`, which the
-        # current `apply_group_norm_silu` helper does not cover -- left on
-        # the eager path until a `group_norm_add_silu` helper exists.
-        x = apply_group_norm_silu(x, self.norm1, self.activation)
+        x = self.norm1(x)
+        x = self.activation(x)
         x = self.conv2(x)
         x = self.norm2(x)
         x = self.activation(x + residual)
@@ -154,7 +146,7 @@ class SpatialRationalResampler(torch.nn.Module):
         return x
 
 
-class LatentUpsampler(torch.nn.Module, LayerwiseOffloadableModuleMixin):
+class LatentUpsampler(torch.nn.Module):
     """
     Upsample VAE latents spatially and/or temporally.
 
@@ -168,9 +160,6 @@ class LatentUpsampler(torch.nn.Module, LayerwiseOffloadableModuleMixin):
         spatial_scale: Scale factor for spatial upsampling.
         rational_resampler: Whether to use rational resampler for spatial upsampling.
     """
-
-    layerwise_offload_dit_group_enabled = False
-    layer_names = ["res_blocks", "post_upsample_res_blocks"]
 
     def __init__(
         self,
@@ -246,7 +235,8 @@ class LatentUpsampler(torch.nn.Module, LayerwiseOffloadableModuleMixin):
         if self.dims == 2:
             x = rearrange(latent, "b c f h w -> (b f) c h w")
             x = self.initial_conv(x)
-            x = apply_group_norm_silu(x, self.initial_norm, self.initial_activation)
+            x = self.initial_norm(x)
+            x = self.initial_activation(x)
             for block in self.res_blocks:
                 x = block(x)
             x = self.upsampler(x)
@@ -256,7 +246,8 @@ class LatentUpsampler(torch.nn.Module, LayerwiseOffloadableModuleMixin):
             x = rearrange(x, "(b f) c h w -> b c f h w", b=b, f=f)
         else:
             x = self.initial_conv(latent)
-            x = apply_group_norm_silu(x, self.initial_norm, self.initial_activation)
+            x = self.initial_norm(x)
+            x = self.initial_activation(x)
             for block in self.res_blocks:
                 x = block(x)
 

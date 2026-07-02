@@ -7,10 +7,6 @@ from typing import TYPE_CHECKING, Any, Optional
 
 import torch
 
-from sglang.srt.mem_cache.allocator.hisparse import (
-    DeepSeekV4HiSparseTokenToKVPoolAllocator,
-)
-from sglang.srt.mem_cache.allocator.swa import SWATokenToKVPoolAllocator
 from sglang.srt.mem_cache.base_prefix_cache import (
     BasePrefixCache,
     DecLockRefParams,
@@ -23,6 +19,7 @@ from sglang.srt.mem_cache.base_prefix_cache import (
     MatchPrefixParams,
     MatchResult,
 )
+from sglang.srt.mem_cache.swa_memory_pool import SWATokenToKVPoolAllocator
 
 if TYPE_CHECKING:
     from sglang.srt.managers.schedule_batch import Req
@@ -33,13 +30,6 @@ logger = logging.getLogger(__name__)
 
 
 class ChunkCache(BasePrefixCache):
-    """
-    ChunkCache is used when radix cache is disabled.
-
-    That includes standard chunked-prefill setups and the decode side of P/D
-    disaggregation when decode radix cache is not enabled.
-    """
-
     def __init__(self, params: CacheInitParams):
         self.req_to_token_pool = params.req_to_token_pool
         self.token_to_kv_pool_allocator = params.token_to_kv_pool_allocator
@@ -69,7 +59,6 @@ class ChunkCache(BasePrefixCache):
             device_indices=torch.empty((0,), dtype=torch.int64),
             last_device_node=None,
             last_host_node=None,
-            best_match_node=None,
         )
 
     def insert(self, params: InsertParams) -> InsertResult:
@@ -86,7 +75,7 @@ class ChunkCache(BasePrefixCache):
 
     def cache_unfinished_req(self, req: Req, chunked=False):
         kv_indices = self.req_to_token_pool.req_to_token[
-            req.req_pool_idx, : req.extend_range.end
+            req.req_pool_idx, : len(req.fill_ids)
         ]
         # `req.prefix_indices` will be used in `PrefillAdder::add_chunked_req` later
         req.prefix_indices = kv_indices.to(dtype=torch.int64, copy=True)
@@ -114,14 +103,7 @@ class SWAChunkCache(ChunkCache):
     """ChunkCache with support for sliding window attention."""
 
     def __init__(self, params: CacheInitParams):
-        # DeepSeek V4 HiSparse wraps SWATokenToKVPoolAllocator and exposes the same API.
-        assert isinstance(
-            params.token_to_kv_pool_allocator,
-            (
-                SWATokenToKVPoolAllocator,
-                DeepSeekV4HiSparseTokenToKVPoolAllocator,
-            ),
-        )
+        assert isinstance(params.token_to_kv_pool_allocator, SWATokenToKVPoolAllocator)
         super().__init__(params)
 
         self.sliding_window_size = params.sliding_window_size
@@ -135,35 +117,3 @@ class SWAChunkCache(ChunkCache):
 
     def evict(self, params: EvictParams) -> EvictResult:
         return EvictResult()
-
-
-class PureSWAChunkCache(SWAChunkCache):
-    """ChunkCache for all-SWA models (no full attention layers).
-
-    For hybrid models, full_to_swa_index_mapping prevents SWA double-free.
-    All-SWA models lack this mapping, so on request completion we must
-    explicitly skip the range already freed by ``free_swa_out_of_window_slots``
-    (a.k.a. _evict_swa) during decode.
-
-    ``req.swa_evict_floor`` only protects the prompt/image KV while the request
-    is active. ChunkCache does not retain finished prefixes, so the protected
-    prefix is released here when the request finishes.
-    """
-
-    def cache_finished_req(self, req: Req, is_insert: bool = True):
-        kv_committed_len = req.pop_committed_kv_cache()
-        kv_indices = self.req_to_token_pool.req_to_token[
-            req.req_pool_idx, :kv_committed_len
-        ]
-        evict_floor = req.swa_evict_floor
-        evicted_seqlen = req.swa_evicted_seqlen
-        if evicted_seqlen > evict_floor:
-            parts = []
-            if evict_floor > 0:
-                parts.append(kv_indices[:evict_floor])
-            if evicted_seqlen < kv_committed_len:
-                parts.append(kv_indices[evicted_seqlen:kv_committed_len])
-            if parts:
-                self.token_to_kv_pool_allocator.free(torch.cat(parts))
-        else:
-            self.token_to_kv_pool_allocator.free(kv_indices)

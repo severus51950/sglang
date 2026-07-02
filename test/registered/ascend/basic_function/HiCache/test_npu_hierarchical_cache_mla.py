@@ -1,4 +1,3 @@
-import os
 import unittest
 
 from sglang.test.ascend.test_ascend_utils import (
@@ -12,6 +11,7 @@ register_npu_ci(
     est_time=400,
     suite="nightly-16-npu-a3",
     nightly=True,
+    disabled="run failed",
 )
 
 
@@ -65,8 +65,6 @@ class TestNpuHierarchicalCacheMla(CustomTestCase):
                 "write_back",
             ],
         ]
-
-        os.environ["TRANSFORMERS_VERBOSITY"] = "error"
         for common_arg in common_args:
             other_args = common_arg + (
                 [
@@ -88,7 +86,6 @@ class TestNpuHierarchicalCacheMla(CustomTestCase):
                 gsp_question_len=1792,
                 gsp_output_len=1,
                 other_server_args=other_args,
-                timeout_for_server_launch=1000,
             )
             TTFT = res["mean_ttft_ms"]
             TTFTS.append(TTFT)

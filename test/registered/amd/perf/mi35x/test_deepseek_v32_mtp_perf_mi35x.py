@@ -132,16 +132,16 @@ class TestNightlyDeepseekV32MTPPerformance(unittest.TestCase):
         cls.output_lens = tuple(_parse_int_list_env("NIGHTLY_OUTPUT_LENS", "512"))
 
         # MTP variant configuration for DeepSeek-V3.2
-        # MI35x uses tilelang DSA backends + EAGLE speculative decoding
+        # MI35x uses tilelang NSA backends + EAGLE speculative decoding
         cls.variant_config = {
             "name": "mtp",
             "other_args": [
                 "--trust-remote-code",
                 "--tp",
                 "8",
-                "--dsa-prefill-backend",
+                "--nsa-prefill-backend",
                 "tilelang",
-                "--dsa-decode-backend",
+                "--nsa-decode-backend",
                 "tilelang",
                 "--speculative-algorithm",
                 "EAGLE",
